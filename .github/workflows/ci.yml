@@ -26,7 +26,7 @@ jobs:
       # the browser client, ring needs clang
       - name: Clippy web client
         if: runner.os == 'Linux'
-        run: cargo clippy --locked --target wasm32-unknown-unknown -p opera-hub-client -- -D warnings
+        run: cargo clippy --locked --target wasm32-unknown-unknown -p sampler-hub-client -- -D warnings
 
       - name: Build
         run: cargo build --locked --release

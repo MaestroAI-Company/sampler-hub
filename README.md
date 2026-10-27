@@ -1,6 +1,6 @@
-# Opera Hub
+# Sampler-Hub
 
-Opera Hub is a small self-hosted server that keeps your [Opera](https://github.com/MaestroAI-Company/opera) devices in sync. Install it on a computer you own, pair your phone, desktop and browser, and the hub handles the rest:
+Sampler-Hub is a small self-hosted server that keeps your [Opera](https://github.com/MaestroAI-Company/opera) devices in sync. Install it on a computer you own, pair your phone, desktop and browser, and the hub handles the rest:
 
 - **Sync**: conversations, settings and AI providers move between your devices.
 - **Profiles**: one hub for a home or a flat share. Each person has a profile, sealed end to end: the hub stores it but cannot read it, its owner included.
@@ -13,39 +13,39 @@ Your data stays on your hardware. There is no account and no Opera server in the
 
 ### Windows
 
-Download `opera-hub-setup-windows-x86_64.exe` from the [latest release](https://github.com/MaestroAI-Company/opera-hub/releases/latest) and run it. It installs for your user only, in `%LOCALAPPDATA%\MaestroAI-Company\Opera Hub`, and starts the hub with your session. A tray icon shows the pairing code and offers updates.
+Download `sampler-hub-setup-windows-x86_64.exe` from the [latest release](https://github.com/MaestroAI-Company/sampler-hub/releases/latest) and run it. It installs for your user only, in `%LOCALAPPDATA%\MaestroAI-Company\Sampler-Hub`, and starts the hub with your session. A tray icon shows the pairing code and offers updates.
 
-You can also host the hub from the Opera desktop app: open **Settings → Opera Hub → Host the hub here**.
+You can also host the hub from the Opera desktop app: open **Settings → Sampler-Hub → Host the hub here**.
 
 ### macOS (Apple silicon)
 
-Download `opera-hub-macos-aarch64.dmg` from the latest release. To install from a terminal instead:
+Download `sampler-hub-macos-aarch64.dmg` from the latest release. To install from a terminal instead:
 
 ```sh
-curl -fsSL https://github.com/MaestroAI-Company/opera-hub/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/MaestroAI-Company/sampler-hub/releases/latest/download/install.sh | sh
 ```
 
 ### Linux (x86_64 and arm64)
 
 ```sh
-curl -fsSL https://github.com/MaestroAI-Company/opera-hub/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/MaestroAI-Company/sampler-hub/releases/latest/download/install.sh | sh
 ```
 
-The script checks every file against the release `SHA256SUMS`. It installs `opera-hub` in `~/.local/bin` (change it with `OPERA_HUB_DIR`) and registers a systemd user service, or a launchd agent on macOS, so the hub starts with your session.
+The script checks every file against the release `SHA256SUMS`. It installs `sampler-hub` in `~/.local/bin` (change it with `SAMPLER_HUB_DIR`) and registers a systemd user service, or a launchd agent on macOS, so the hub starts with your session.
 
-On every system the installer puts `opera-hub` on your `PATH`, so open a new terminal and type the commands below directly.
+On every system the installer puts `sampler-hub` on your `PATH`, so open a new terminal and type the commands below directly.
 
 ## Pair a device
 
 On the hub's computer:
 
 ```sh
-opera-hub pair
+sampler-hub pair
 ```
 
 The command prints a QR code and an 8-character code, both valid for a single pairing:
 
-- **phone**: scan the QR code from **Settings → Opera Hub → Pair a hub**;
+- **phone**: scan the QR code from **Settings → Sampler-Hub → Pair a hub**;
 - **desktop or browser**: type the code in the same place.
 
 On the same network, Opera also finds the hub by itself and lists it under **Nearby hubs**. You still have to enter the code; being on the network grants nothing.
@@ -68,18 +68,18 @@ Each profile has its own conversations, settings, API keys and hosted MCP server
 
 | Command | What it does |
 |---|---|
-| `opera-hub run` | Run the hub in the foreground |
-| `opera-hub pair` | Show a one-time QR code and code to pair a device |
-| `opera-hub devices` | List paired devices |
-| `opera-hub devices remove <id>` | Unpair a device by id or id prefix |
-| `opera-hub profiles` | List profiles |
-| `opera-hub profiles remove <id>` | Remove a profile with its data, devices and MCP servers |
-| `opera-hub profiles promote <id>` | Let a profile manage the hub |
-| `opera-hub service install` | Start the hub with your session, now and at every login |
-| `opera-hub service start` / `stop` / `status` | Control the background service |
-| `opera-hub service uninstall` | Stop the hub and remove it from your session |
-| `opera-hub ticket` | Print the hub ticket, for `ping` |
-| `opera-hub ping <ticket>` | Check that a hub is reachable |
+| `sampler-hub run` | Run the hub in the foreground |
+| `sampler-hub pair` | Show a one-time QR code and code to pair a device |
+| `sampler-hub devices` | List paired devices |
+| `sampler-hub devices remove <id>` | Unpair a device by id or id prefix |
+| `sampler-hub profiles` | List profiles |
+| `sampler-hub profiles remove <id>` | Remove a profile with its data, devices and MCP servers |
+| `sampler-hub profiles promote <id>` | Let a profile manage the hub |
+| `sampler-hub service install` | Start the hub with your session, now and at every login |
+| `sampler-hub service start` / `stop` / `status` | Control the background service |
+| `sampler-hub service uninstall` | Stop the hub and remove it from your session |
+| `sampler-hub ticket` | Print the hub ticket, for `ping` |
+| `sampler-hub ping <ticket>` | Check that a hub is reachable |
 
 Every command takes `--data-dir <path>` to use another data directory, for example to run two hubs side by side.
 
@@ -113,17 +113,17 @@ The hub keeps its data here:
 
 | OS | Data directory |
 |---|---|
-| Windows | `%LOCALAPPDATA%\MaestroAI-Company\Opera Hub\data` |
-| macOS | `~/Library/Application Support/company.MaestroAI-Company.Opera-Hub` |
-| Linux | `~/.local/share/operahub` |
+| Windows | `%LOCALAPPDATA%\MaestroAI-Company\Sampler-Hub\data` |
+| macOS | `~/Library/Application Support/company.MaestroAI-Company.Sampler-Hub` |
+| Linux | `~/.local/share/samplerhub` |
 
 ## Build from source
 
 You need a recent stable Rust toolchain.
 
 ```sh
-cargo build --release -p opera-hub                         # opera-hub and opera-hubw, the tray app
-cargo build --release -p opera-hub --no-default-features   # opera-hub only, for headless servers
+cargo build --release -p sampler-hub                         # sampler-hub and sampler-hubw, the tray app
+cargo build --release -p sampler-hub --no-default-features   # sampler-hub only, for headless servers
 cargo test --workspace
 ```
 
@@ -131,9 +131,9 @@ The repository holds four crates:
 
 | Crate | Role |
 |---|---|
-| `opera-hub` | The hub: CLI, background service, tray, sync store, llama.cpp runtime |
-| `opera-hub-proto` | Protocol types shared by the hub and its clients |
-| `opera-hub-client` | The client library Opera uses, with Kotlin bindings (uniffi) for Android and a WebAssembly build for browsers |
+| `sampler-hub` | The hub: CLI, background service, tray, sync store, llama.cpp runtime |
+| `sampler-hub-proto` | Protocol types shared by the hub and its clients |
+| `sampler-hub-client` | The client library Opera uses, with Kotlin bindings (uniffi) for Android and a WebAssembly build for browsers |
 | `uniffi-bindgen` | Generates the Kotlin bindings |
 
 ## License
