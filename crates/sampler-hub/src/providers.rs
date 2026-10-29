@@ -103,13 +103,19 @@ impl Providers {
     async fn detect(&self, profile: &str) -> Vec<ProviderInfo> {
         //each profile reaches its own servers
         let mut found = self.mcp.providers(profile);
-        if !self.settings.get().share_providers {
+        let settings = self.settings.get();
+        if !settings.share_providers {
             return found;
         }
         if self.llama.base_url().is_some() {
             found.push(ProviderInfo {
                 id: crate::llama::PROVIDER_ID.into(),
-                name: "llama.cpp".into(),
+                name: if settings.models_nightly {
+                    "llama.cpp nightly"
+                } else {
+                    "llama.cpp"
+                }
+                .into(),
                 kind: "openai".into(),
             });
         }
