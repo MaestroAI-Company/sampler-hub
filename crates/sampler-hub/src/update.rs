@@ -59,6 +59,7 @@ pub async fn watch_releases(http: reqwest::Client, latest: watch::Sender<Option<
 pub fn asset() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86_64") => Some("sampler-hub-setup-windows-x86_64.exe"),
+        ("windows", "aarch64") => Some("sampler-hub-setup-windows-aarch64.exe"),
         ("linux", "x86_64") => Some("sampler-hub-linux-x86_64"),
         ("linux", "aarch64") => Some("sampler-hub-linux-aarch64"),
         ("macos", "aarch64") => Some("sampler-hub-macos-aarch64"),

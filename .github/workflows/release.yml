@@ -85,12 +85,22 @@ jobs:
           - { os: ubuntu-latest, name: sampler-hub-linux-x86_64, bin: sampler-hub }
           - { os: ubuntu-24.04-arm, name: sampler-hub-linux-aarch64, bin: sampler-hub }
           - { os: macos-latest, name: sampler-hub-macos-aarch64, bin: sampler-hub }
-          - { os: windows-latest, name: sampler-hub-windows-x86_64.exe, bin: sampler-hub.exe }
+          - { os: windows-latest, name: sampler-hub-windows-x86_64.exe, bin: sampler-hub.exe, arch: x86_64 }
+          - { os: windows-11-arm, name: sampler-hub-windows-aarch64.exe, bin: sampler-hub.exe, arch: aarch64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+
+      # ring needs clang for aarch64 windows
+      - name: Put clang on the path
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        shell: bash
+        run: |
+          if ! command -v clang >/dev/null; then
+            echo "C:\Program Files\LLVM\bin" >> "$GITHUB_PATH"
+          fi
 
       - name: Build
         run: cargo build --locked --release -p sampler-hub
@@ -102,7 +112,7 @@ jobs:
           cp target/release/${{ matrix.bin }} dist/${{ matrix.name }}
           # background start needs the tray twin next to it
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/release/sampler-hubw.exe dist/sampler-hubw-windows-x86_64.exe
+            cp target/release/sampler-hubw.exe dist/sampler-hubw-windows-${{ matrix.arch }}.exe
           fi
           if [ "${{ runner.os }}" = "macOS" ]; then
             cp target/release/sampler-hubw dist/sampler-hubw-macos-aarch64
@@ -124,7 +134,7 @@ jobs:
         shell: bash
         run: |
           cargo packager -p sampler-hub --release --formats nsis
-          cp target/release/*-setup.exe dist/sampler-hub-setup-windows-x86_64.exe
+          cp target/release/*-setup.exe dist/sampler-hub-setup-windows-${{ matrix.arch }}.exe
 
       - name: Build macOS disk image
         if: runner.os == 'macOS'
