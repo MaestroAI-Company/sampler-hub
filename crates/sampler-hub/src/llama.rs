@@ -1192,7 +1192,14 @@ mod option_tests {
 
     #[test]
     fn zero_options_keep_llama_defaults() {
-        assert!(option_args(HubSettings::default().model_options()).is_empty());
+        assert!(
+            option_args(ModelOptions {
+                ctx_size: 0,
+                keep_alive: 0,
+                parallel: 0,
+            })
+            .is_empty()
+        );
         let args = option_args(ModelOptions {
             ctx_size: 8192,
             keep_alive: 300,

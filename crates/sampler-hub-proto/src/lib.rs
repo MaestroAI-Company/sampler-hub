@@ -205,7 +205,7 @@ impl Default for HubSettings {
             models: true,
             models_nightly: false,
             ctx_size: 0,
-            keep_alive: 0,
+            keep_alive: 300,
             parallel: 0,
         }
     }
