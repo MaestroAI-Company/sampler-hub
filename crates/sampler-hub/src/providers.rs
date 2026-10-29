@@ -107,7 +107,8 @@ impl Providers {
         if !settings.share_providers {
             return found;
         }
-        if self.llama.base_url().is_some() {
+        //listed while starting or failed too
+        if settings.models && !self.llama.installed().is_empty() {
             found.push(ProviderInfo {
                 id: crate::llama::PROVIDER_ID.into(),
                 name: if settings.models_nightly {
@@ -155,19 +156,17 @@ impl Providers {
         if !self.settings.get().share_providers {
             bail!("this hub does not share its providers");
         }
-        let llama = self
-            .llama
-            .base_url()
-            .filter(|_| head.provider == crate::llama::PROVIDER_ID);
-        let base = match llama {
-            Some(base) => base,
-            None => self
-                .targets
+        let base = if head.provider == crate::llama::PROVIDER_ID {
+            self.llama
+                .base_url()
+                .ok_or_else(|| anyhow!("llama.cpp is not running"))?
+        } else {
+            self.targets
                 .iter()
                 .find(|t| t.id == head.provider)
                 .ok_or_else(|| anyhow!("unknown provider {}", head.provider))?
                 .base
-                .clone(),
+                .clone()
         };
         //a leading slash keeps the host fixed
         if !head.path.starts_with('/') {
