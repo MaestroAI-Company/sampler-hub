@@ -42,6 +42,10 @@ impl Usage {
         );
         let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
         for (pid, process) in system.processes() {
+            //linux lists threads as child processes
+            if process.thread_kind().is_some() {
+                continue;
+            }
             if let Some(parent) = process.parent() {
                 children.entry(parent).or_default().push(*pid);
             }

@@ -534,6 +534,9 @@ impl Llama {
             .join("server")
             .join(format!("{tag}-{}", flavor.backend));
         if let Some(exe) = find_server(&target) {
+            if flavor.runtime.is_some() {
+                colocate_runtime(&target, &exe)?;
+            }
             return Ok(Build {
                 exe,
                 tag: tag.to_string(),
@@ -569,6 +572,9 @@ impl Llama {
         let _ = std::fs::remove_dir_all(&target);
         std::fs::rename(&staging, &target)?;
         let exe = find_server(&target).context("the llama.cpp build has no llama-server")?;
+        if flavor.runtime.is_some() {
+            colocate_runtime(&target, &exe)?;
+        }
         Ok(Build {
             exe,
             tag: tag.to_string(),
@@ -916,6 +922,28 @@ pub(crate) fn extract(name: &str, bytes: &[u8], into: &Path) -> Result<()> {
         zip::ZipArchive::new(std::io::Cursor::new(bytes))?.extract(into)?;
     } else {
         tar::Archive::new(flate2::read::GzDecoder::new(bytes)).unpack(into)?;
+    }
+    Ok(())
+}
+
+//cuda runtime unpacks in its own folder
+fn colocate_runtime(dir: &Path, exe: &Path) -> Result<()> {
+    let Some(bin) = exe.parent() else { return Ok(()) };
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next)?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path != bin {
+                    stack.push(path);
+                }
+            } else if path.file_name().and_then(|f| f.to_str()).is_some_and(|f| f.starts_with("libcu")) {
+                let moved = bin.join(entry.file_name());
+                if !moved.exists() {
+                    std::fs::rename(&path, moved)?;
+                }
+            }
+        }
     }
     Ok(())
 }
