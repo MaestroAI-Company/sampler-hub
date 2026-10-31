@@ -1,11 +1,12 @@
 [package]
 name = "sampler-hub-client"
-version = "0.11.0"
+version = "0.11.1"
 edition = "2024"
 license = "AGPL-3.0-only"
 
 [lib]
-crate-type = ["cdylib", "lib"]
+#staticlib for the ios xcframework
+crate-type = ["cdylib", "staticlib", "lib"]
 
 [dependencies]
 anyhow = "1.0.104"

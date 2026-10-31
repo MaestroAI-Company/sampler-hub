@@ -601,7 +601,7 @@ impl Llama {
                 builds.push((tag.to_string(), backend.to_string(), exe));
             }
         }
-        builds.sort_by(|a, b| build_number(&b.0).cmp(&build_number(&a.0)));
+        builds.sort_by_key(|b| std::cmp::Reverse(build_number(&b.0)));
         builds
     }
 

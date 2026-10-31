@@ -77,6 +77,56 @@ jobs:
           name: web-client
           path: dist/
 
+  # prebuilt client pulled by the opera ios build
+  ios-client:
+    runs-on: macos-latest
+    env:
+      # matches the opera deployment target
+      IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Build libraries
+        run: |
+          for target in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios; do
+            cargo build --locked --release --target $target -p sampler-hub-client
+          done
+
+      # stripped lib so bindings read the host build
+      - name: Generate swift bindings
+        run: |
+          cargo build --locked -p sampler-hub-client
+          cargo run --locked -q -p uniffi-bindgen -- generate \
+            --library target/debug/libsampler_hub_client.dylib \
+            --language swift --out-dir bindings
+
+      # one simulator slice holds both archs
+      - name: Build xcframework
+        run: |
+          mkdir sim
+          lipo -create target/aarch64-apple-ios-sim/release/libsampler_hub_client.a \
+            target/x86_64-apple-ios/release/libsampler_hub_client.a -output sim/libsampler_hub_client.a
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/libsampler_hub_client.a \
+            -library sim/libsampler_hub_client.a \
+            -output SamplerHubClient.xcframework
+
+      - name: Collect assets
+        run: |
+          mkdir dist
+          ditto -c -k --keepParent SamplerHubClient.xcframework dist/sampler-hub-client-ios.xcframework.zip
+          cp bindings/sampler_hub_client.swift dist/
+          cp bindings/sampler_hub_clientFFI.h dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-client
+          path: dist/
+
   hub:
     strategy:
       fail-fast: false
@@ -148,7 +198,7 @@ jobs:
           path: dist/
 
   publish:
-    needs: [android-client, web-client, hub]
+    needs: [android-client, ios-client, web-client, hub]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
