@@ -93,7 +93,8 @@ mod tests {
         let mut bytes = [0u8; 8];
         getrandom::fill(&mut bytes).unwrap();
         let name: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        let dir = std::env::temp_dir().join(format!("sampler-hub-sandbox-{name}"));
+        //unix socket paths stop at 104 bytes on macos
+        let dir = std::env::temp_dir().join(format!("shs-{name}"));
         std::fs::create_dir_all(&dir).unwrap();
         //macos temp sits behind a symlink
         if cfg!(unix) {
