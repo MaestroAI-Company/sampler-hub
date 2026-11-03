@@ -20,6 +20,8 @@ pub const SYNC_ALPN: &[u8] = b"sampler/sync/2";
 pub const MODELS_ALPN: &[u8] = b"sampler/models/1";
 pub const MCP_ALPN: &[u8] = b"sampler/mcp/1";
 pub const PROFILES_ALPN: &[u8] = b"sampler/profiles/1";
+//unpaired devices sign into a profile
+pub const LOGIN_ALPN: &[u8] = b"sampler/login/1";
 
 //provider configs with their keys and tokens
 pub const COLLECTION_PROVIDERS: &str = "providers";
@@ -248,6 +250,9 @@ pub struct ProfileInfo {
     pub name: String,
     pub role: ProfileRole,
     pub created_at: u64,
+    //maestro look shown on the card
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub butterfly: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,6 +298,9 @@ pub enum ProfileRequest {
     },
     Rename {
         name: String,
+    },
+    SetButterfly {
+        butterfly: String,
     },
     //for the cloud backup header
     LockedKey,
@@ -356,6 +364,45 @@ pub enum ProfileResponse {
         //sent with the sealed key
         profile: Option<ProfileInfo>,
         denied: bool,
+    },
+    Error {
+        message: String,
+    },
+}
+
+//pairs and unlocks in one step
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LoginRequest {
+    List,
+    Cost {
+        profile: String,
+    },
+    Login {
+        profile: String,
+        auth_key: String,
+        name: String,
+        kind: String,
+        #[serde(default)]
+        machine: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LoginResponse {
+    Profiles {
+        profiles: Vec<ProfileInfo>,
+    },
+    Cost {
+        salt: String,
+        memory_kib: u32,
+        passes: u32,
+    },
+    Unlocked {
+        hub_name: String,
+        profile: ProfileInfo,
+        locked: LockedKey,
     },
     Error {
         message: String,

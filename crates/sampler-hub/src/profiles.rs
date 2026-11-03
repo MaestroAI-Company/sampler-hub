@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use sampler_hub_proto::{
-    LockedKey, ProfileInfo, ProfileRequest, ProfileResponse, auth_hash, clean_device_name,
-    read_frame, write_frame,
+    LockedKey, LoginRequest, LoginResponse, ProfileInfo, ProfileRequest, ProfileResponse,
+    ProfileRole, auth_hash, clean_device_name, read_frame, write_frame,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Notify;
@@ -15,7 +15,8 @@ use tracing::{info, warn};
 
 use crate::db::{Db, ProfileKey};
 use crate::protocols::{Access, Peer, Protocol};
-use crate::store::{PAIRING_TTL, Store};
+use crate::settings::Settings;
+use crate::store::{Device, PAIRING_TTL, Store, default_scopes, unix_now};
 
 //free tries before the lockout grows
 const FREE_TRIES: u32 = 5;
@@ -67,7 +68,7 @@ impl Profiles {
     async fn handle(&self, peer: &Peer, request: ProfileRequest) -> Result<ProfileResponse> {
         Ok(match request {
             ProfileRequest::List => ProfileResponse::Profiles {
-                profiles: self.store.profiles()?,
+                profiles: self.visible_profiles(peer)?,
             },
             ProfileRequest::Cost { profile } => {
                 let key = self.key(&profile)?;
@@ -135,6 +136,20 @@ impl Profiles {
                     profile: self.profile(profile)?,
                 }
             }
+            ProfileRequest::SetButterfly { butterfly } => {
+                //an id, never free text
+                if butterfly.is_empty()
+                    || butterfly.len() > MAX_BUTTERFLY
+                    || !butterfly.bytes().all(|b| b.is_ascii_alphanumeric())
+                {
+                    bail!("invalid butterfly");
+                }
+                let profile = peer.profile()?;
+                self.store.set_butterfly(profile, &butterfly)?;
+                ProfileResponse::Profile {
+                    profile: self.profile(profile)?,
+                }
+            }
             ProfileRequest::LinkStart { commitment } => {
                 let profile = peer.profile()?.to_string();
                 let id = self.links.start(&peer.id, &profile, commitment)?;
@@ -186,6 +201,22 @@ impl Profiles {
         })
     }
 
+    //members only see their own profile
+    fn visible_profiles(&self, peer: &Peer) -> Result<Vec<ProfileInfo>> {
+        let profiles = self.store.profiles()?;
+        //unbound devices still pick one to unlock
+        let Some(own) = &peer.profile else {
+            return Ok(profiles);
+        };
+        let admin = profiles
+            .iter()
+            .any(|p| &p.id == own && p.role == ProfileRole::Admin);
+        Ok(profiles
+            .into_iter()
+            .filter(|p| admin || &p.id == own)
+            .collect())
+    }
+
     //one profile per device for now
     fn unbound(&self, peer: &Peer) -> Result<()> {
         if peer.profile.is_some() {
@@ -218,6 +249,99 @@ impl Profiles {
         Ok(key)
     }
 }
+
+//sampler/login/1, open while the hub is discoverable
+#[derive(Clone)]
+pub struct Login {
+    pub profiles: Profiles,
+    pub settings: Arc<Settings>,
+    pub name: Arc<str>,
+}
+
+impl std::fmt::Debug for Login {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Login")
+    }
+}
+
+impl Protocol for Login {
+    const ACCESS: Access = Access::Public;
+
+    async fn serve<R, W>(&self, peer: Peer, mut reader: R, mut writer: W) -> Result<()>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        while let Some(request) = read_frame(&mut reader).await? {
+            let response = match self.handle(&peer, request) {
+                Ok(response) => response,
+                Err(e) => LoginResponse::Error {
+                    message: format!("{e:#}"),
+                },
+            };
+            write_frame(&mut writer, &response).await?;
+        }
+        Ok(())
+    }
+}
+
+impl Login {
+    fn handle(&self, peer: &Peer, request: LoginRequest) -> Result<LoginResponse> {
+        //hidden hubs only pair with a code
+        if !self.settings.get().lan_discovery {
+            bail!("this hub only pairs with a code");
+        }
+        let profiles = &self.profiles;
+        Ok(match request {
+            LoginRequest::List => LoginResponse::Profiles {
+                profiles: profiles.store.profiles()?,
+            },
+            LoginRequest::Cost { profile } => {
+                let key = profiles.key(&profile)?;
+                LoginResponse::Cost {
+                    salt: key.locked.salt,
+                    memory_kib: key.locked.memory_kib,
+                    passes: key.locked.passes,
+                }
+            }
+            LoginRequest::Login {
+                profile,
+                auth_key,
+                name,
+                kind,
+                machine,
+            } => {
+                let key = profiles.check_password(&profile, &auth_key)?;
+                let info = profiles.profile(&profile)?;
+                let kind: String = kind.chars().take(MAX_KIND).collect();
+                let name =
+                    clean_device_name(&name).ok_or_else(|| anyhow!("a device needs a name"))?;
+                profiles.store.add_device(Device {
+                    id: peer.id.clone(),
+                    name: name.clone(),
+                    scopes: default_scopes(&kind),
+                    kind,
+                    paired_at: unix_now(),
+                    paired_by: None,
+                    last_seen: Some(unix_now()),
+                    //only a hash fits
+                    machine: machine
+                        .filter(|tag| tag.len() == 64 && tag.bytes().all(|b| b.is_ascii_hexdigit())),
+                    profile: Some(profile),
+                })?;
+                info!("{name} ({}) signed into {}", short(&peer.id), info.name);
+                LoginResponse::Unlocked {
+                    hub_name: self.name.to_string(),
+                    profile: info,
+                    locked: key.locked,
+                }
+            }
+        })
+    }
+}
+
+const MAX_KIND: usize = 64;
+const MAX_BUTTERFLY: usize = 32;
 
 fn check_key(locked: &LockedKey, auth_hash: &str) -> Result<()> {
     if locked.memory_kib < MIN_MEMORY_KIB || locked.passes < MIN_PASSES {

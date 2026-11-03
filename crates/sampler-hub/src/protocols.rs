@@ -191,15 +191,19 @@ impl Protocol for Session {
         while let Some(request) = read_frame(&mut reader).await? {
             let response = match request {
                 HubRequest::Hello => {
-                    let load = self.usage.hub();
+                    //performance stays with admins
+                    let usage = self.is_admin(&peer)?.then(|| {
+                        let load = self.usage.hub();
+                        sampler_hub_proto::HubUsage {
+                            cpu: load.cpu,
+                            memory: load.memory,
+                        }
+                    });
                     HubResponse::Hello {
                         name: self.name.to_string(),
                         version: env!("CARGO_PKG_VERSION").into(),
                         update: self.latest.borrow().clone(),
-                        usage: Some(sampler_hub_proto::HubUsage {
-                            cpu: load.cpu,
-                            memory: load.memory,
-                        }),
+                        usage,
                         model_options: Some(self.settings.get().model_options()),
                     }
                 }
@@ -230,15 +234,19 @@ impl Protocol for Session {
 
 impl Session {
     //admins see all devices
-    fn visible_devices(&self, peer: &Peer) -> Result<Vec<Device>> {
-        let devices = self.store.devices()?;
-        let admin = match &peer.profile {
+    fn is_admin(&self, peer: &Peer) -> Result<bool> {
+        Ok(match &peer.profile {
             Some(profile) => self
                 .store
                 .profile(profile)?
                 .is_some_and(|p| p.role == ProfileRole::Admin),
             None => false,
-        };
+        })
+    }
+
+    fn visible_devices(&self, peer: &Peer) -> Result<Vec<Device>> {
+        let devices = self.store.devices()?;
+        let admin = self.is_admin(peer)?;
         Ok(devices
             .into_iter()
             .filter(|device| {

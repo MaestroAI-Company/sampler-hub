@@ -10,7 +10,7 @@ use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, SecretKey};
 use iroh_tickets::endpoint::EndpointTicket;
 use sampler_hub_proto::{
-    ADMIN_ALPN, HUB_ALPN, MCP_ALPN, MODELS_ALPN, PAIR_ALPN, PING_ALPN, PROFILES_ALPN,
+    ADMIN_ALPN, HUB_ALPN, LOGIN_ALPN, MCP_ALPN, MODELS_ALPN, PAIR_ALPN, PING_ALPN, PROFILES_ALPN,
     PROVIDERS_ALPN, PairingLink, SECRETS_ALPN, SYNC_ALPN, UNAUTHORIZED, hub_addr,
 };
 use tracing::{info, warn};
@@ -21,7 +21,7 @@ use crate::db::Db;
 use crate::lan;
 use crate::llama::{Llama, Models};
 use crate::mcp::{Mcp, McpAdmin};
-use crate::profiles::{Links, Profiles};
+use crate::profiles::{Links, Login, Profiles};
 use crate::protocols::{Admin, Pair, Ping, Protocol, Session, admit, still_allowed};
 use crate::providers::{Providers, Target, default_targets};
 use crate::secrets::{Secrets, http_client};
@@ -128,6 +128,14 @@ async fn start(data_dir: &Path, targets: Vec<Target>) -> Result<Running> {
     ));
     let name: Arc<str> = config.hub_name().into();
     let links = Arc::new(Links::default());
+    //one lockout for both password paths
+    let profiles = Profiles {
+        store: store.clone(),
+        db: db.clone(),
+        data_dir: data_dir.to_path_buf(),
+        links: links.clone(),
+        tries: Default::default(),
+    };
     let router = Router::builder(endpoint)
         .accept(PING_ALPN, OverIroh::new(Ping, &store))
         .accept(
@@ -136,7 +144,7 @@ async fn start(data_dir: &Path, targets: Vec<Target>) -> Result<Running> {
                 Pair {
                     store: store.clone(),
                     name: name.clone(),
-                    links: links.clone(),
+                    links,
                 },
                 &store,
             ),
@@ -146,7 +154,7 @@ async fn start(data_dir: &Path, targets: Vec<Target>) -> Result<Running> {
             OverIroh::new(
                 Session {
                     store: store.clone(),
-                    name,
+                    name: name.clone(),
                     latest: latest.clone(),
                     usage: Default::default(),
                     settings: settings.clone(),
@@ -169,15 +177,14 @@ async fn start(data_dir: &Path, targets: Vec<Target>) -> Result<Running> {
                 &store,
             ),
         )
+        .accept(PROFILES_ALPN, OverIroh::new(profiles.clone(), &store))
         .accept(
-            PROFILES_ALPN,
+            LOGIN_ALPN,
             OverIroh::new(
-                Profiles {
-                    store: store.clone(),
-                    db: db.clone(),
-                    data_dir: data_dir.to_path_buf(),
-                    links,
-                    tries: Default::default(),
+                Login {
+                    profiles,
+                    settings: settings.clone(),
+                    name,
                 },
                 &store,
             ),
@@ -203,7 +210,7 @@ async fn start(data_dir: &Path, targets: Vec<Target>) -> Result<Running> {
             SECRETS_ALPN,
             OverIroh::new(
                 Secrets {
-                    db,
+                    db: db.clone(),
                     leases: Default::default(),
                 },
                 &store,

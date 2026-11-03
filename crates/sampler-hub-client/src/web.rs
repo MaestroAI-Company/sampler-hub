@@ -131,6 +131,14 @@ impl WebHubClient {
         ))
     }
 
+    #[wasm_bindgen(js_name = setProfileButterfly)]
+    pub fn set_profile_butterfly(&self, hub: JsValue, butterfly: String) -> Result<Promise, JsValue> {
+        let (inner, hub) = (self.inner.clone(), from_js::<PairedHub>(hub)?);
+        Ok(promise(async move {
+            inner.set_profile_butterfly(hub, butterfly).await
+        }))
+    }
+
     #[wasm_bindgen(js_name = lockedKey)]
     pub fn locked_key(&self, hub: JsValue) -> Result<Promise, JsValue> {
         let (inner, hub) = (self.inner.clone(), from_js::<PairedHub>(hub)?);

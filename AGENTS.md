@@ -18,6 +18,10 @@ exemple : //load model and detect objects
 # Use updated code
 You can get updated docs with the context7 mcp
 
+# Releasing a version
+
+When asked to release or publish a version (production or beta), read `distribution/README.md` first and follow its steps.
+
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**

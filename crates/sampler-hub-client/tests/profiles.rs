@@ -136,6 +136,84 @@ async fn profiles_lock_and_link() {
     assert!(theirs.records.is_empty());
     assert!(flatmate.invite(hub_ref.clone()).await.is_err());
 
+    //the card look reaches the other profiles
+    let styled = flatmate
+        .set_profile_butterfly(hub_ref.clone(), "butterfly3".into())
+        .await
+        .unwrap();
+    assert_eq!(styled.butterfly.as_deref(), Some("butterfly3"));
+    let listed = phone.profiles(hub_ref.clone()).await.unwrap();
+    let theirs_card = listed.iter().find(|p| p.id == member.profile.id).unwrap();
+    assert_eq!(theirs_card.butterfly.as_deref(), Some("butterfly3"));
+    assert!(
+        flatmate
+            .set_profile_butterfly(hub_ref.clone(), "<script>".into())
+            .await
+            .is_err()
+    );
+
+    //members see neither other profiles nor performance
+    let seen = flatmate.profiles(hub_ref.clone()).await.unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].id, member.profile.id);
+    assert!(flatmate.status(hub_ref.clone()).await.unwrap().memory.is_none());
+    assert_eq!(phone.profiles(hub_ref.clone()).await.unwrap().len(), 2);
+    assert!(phone.status(hub_ref.clone()).await.unwrap().memory.is_some());
+
+    //nearby hub signs in without code
+    let nearby = sampler_hub_client::NearbyHub {
+        id: hub_ref.id.clone(),
+        name: hub_ref.name.clone(),
+        addrs: Vec::new(),
+    };
+    let visitor = new_client();
+    //a hidden hub only pairs with a code
+    let mut settings = phone.hub_settings(hub_ref.clone()).await.unwrap();
+    settings.lan_discovery = false;
+    phone
+        .set_hub_settings(hub_ref.clone(), settings.clone())
+        .await
+        .unwrap();
+    assert!(visitor.nearby_profiles(nearby.clone()).await.is_err());
+    settings.lan_discovery = true;
+    phone
+        .set_hub_settings(hub_ref.clone(), settings)
+        .await
+        .unwrap();
+    assert_eq!(visitor.nearby_profiles(nearby.clone()).await.unwrap().len(), 2);
+    let wrong = visitor
+        .sign_in(
+            nearby.clone(),
+            owner.profile.id.clone(),
+            "wrong".into(),
+            "visitor".into(),
+            "phone".into(),
+            None,
+        )
+        .await;
+    assert!(wrong.is_err(), "{wrong:?}");
+    assert!(matches!(
+        visitor.profiles(hub_ref.clone()).await,
+        Err(HubError::Unauthorized)
+    ));
+    let signed = visitor
+        .sign_in(
+            nearby,
+            owner.profile.id.clone(),
+            "correct horse".into(),
+            "visitor".into(),
+            "phone".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(signed.profile.key, owner.key);
+    let page = visitor
+        .pull(signed.hub.clone(), "conversations".into(), 0)
+        .await
+        .unwrap();
+    assert_eq!(page.records[0].id, "conv");
+
     //too many wrong passwords lock the profile
     let guesser = new_client();
     pair(&guesser, &data_dir, "guesser").await;

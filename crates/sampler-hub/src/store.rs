@@ -128,6 +128,7 @@ impl Store {
                 ProfileRole::Member
             },
             created_at: unix_now(),
+            butterfly: None,
         };
         profiles.push(profile.clone());
         write_json(&self.dir.join(PROFILES_FILE), &profiles)?;
@@ -197,6 +198,17 @@ impl Store {
         Ok(true)
     }
 
+    pub fn set_butterfly(&self, id: &str, butterfly: &str) -> Result<bool> {
+        let _guard = self.lock.lock().unwrap();
+        let mut profiles = self.profiles()?;
+        let Some(profile) = profiles.iter_mut().find(|profile| profile.id == id) else {
+            return Ok(false);
+        };
+        profile.butterfly = Some(butterfly.to_string());
+        write_json(&self.dir.join(PROFILES_FILE), &profiles)?;
+        Ok(true)
+    }
+
     pub fn rename_profile(&self, id: &str, name: &str) -> Result<bool> {
         let _guard = self.lock.lock().unwrap();
         let mut profiles = self.profiles()?;
@@ -245,14 +257,24 @@ impl Store {
         }
         //one time secret
         std::fs::remove_file(&path)?;
+        self.put_device(device)?;
+        Ok(Ok(pending.link))
+    }
+
+    //a password login pairs without a secret
+    pub fn add_device(&self, device: Device) -> Result<()> {
+        let _guard = self.lock.lock().unwrap();
+        self.put_device(device)
+    }
+
+    fn put_device(&self, device: Device) -> Result<()> {
         let mut devices = self.devices()?;
         //a reinstalled app comes back with a new key
         let same_machine =
             |known: &Device| device.machine.is_some() && known.machine == device.machine;
         devices.retain(|known| known.id != device.id && !same_machine(known));
         devices.push(device);
-        write_json(&self.dir.join(DEVICES_FILE), &devices)?;
-        Ok(Ok(pending.link))
+        write_json(&self.dir.join(DEVICES_FILE), &devices)
     }
 }
 

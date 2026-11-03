@@ -19,7 +19,7 @@ use sampler_hub_proto::HubSettings as ProtoSettings;
 use sampler_hub_proto::invite::{self, INVITE_ALPN, InviteRequest, InviteResponse};
 use sampler_hub_proto::{
     ADMIN_ALPN, AdminRequest, AdminResponse, ForwardHead, HUB_ALPN, HubRequest, HubResponse,
-    MODELS_ALPN, ModelsRequest, ModelsResponse, PAIR_ALPN, PROFILES_ALPN, PROVIDERS_ALPN,
+    LOGIN_ALPN, LoginRequest, LoginResponse, MODELS_ALPN, ModelsRequest, ModelsResponse, PAIR_ALPN, PROFILES_ALPN, PROVIDERS_ALPN,
     PairRejection, PairRequest, PairResponse, PairingLink, ProfileInfo, ProfileRequest,
     ProfileResponse, ProfileRole, ProvidersRequest, ProvidersResponse, Record, SECRET_COLLECTIONS,
     SECRETS_ALPN, SYNC_ALPN, SecretsRequest, SecretsResponse, SyncRequest, SyncResponse,
@@ -309,6 +309,7 @@ pub struct HubProfile {
     //admin or member
     pub role: String,
     pub created_at: u64,
+    pub butterfly: Option<String>,
 }
 
 //the app keeps the key securely
@@ -323,6 +324,18 @@ pub struct UnlockedProfile {
     pub key: String,
     //none after a device link, the hub has it
     pub lock: Option<ProfileLock>,
+}
+
+//pair and unlock in one step
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(
+    not(all(target_family = "wasm", target_os = "unknown")),
+    derive(uniffi::Record)
+)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedIn {
+    pub hub: PairedHub,
+    pub profile: UnlockedProfile,
 }
 
 //what a cloud backup needs to reopen the key
@@ -530,6 +543,21 @@ impl HubClient {
     ) -> Result<HubProfile, HubError> {
         match self
             .profile_request(&hub, ProfileRequest::Rename { name })
+            .await?
+        {
+            ProfileResponse::Profile { profile } => Ok(hub_profile(profile)),
+            other => Err(unexpected_profile(other)),
+        }
+    }
+
+    //the card look other devices see
+    pub async fn set_profile_butterfly(
+        &self,
+        hub: PairedHub,
+        butterfly: String,
+    ) -> Result<HubProfile, HubError> {
+        match self
+            .profile_request(&hub, ProfileRequest::SetButterfly { butterfly })
             .await?
         {
             ProfileResponse::Profile { profile } => Ok(hub_profile(profile)),
@@ -957,6 +985,72 @@ impl HubClient {
             .collect())
     }
 
+    //profiles a nearby hub offers before pairing
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+    pub async fn nearby_profiles(&self, hub: NearbyHub) -> Result<Vec<HubProfile>, HubError> {
+        match self.login_request(&nearby(&hub), LoginRequest::List).await? {
+            LoginResponse::Profiles { profiles } => {
+                Ok(profiles.into_iter().map(hub_profile).collect())
+            }
+            other => Err(HubError::Internal(format!("unexpected answer {other:?}"))),
+        }
+    }
+
+    //the password pairs this device, no code needed
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+    pub async fn sign_in(
+        &self,
+        hub: NearbyHub,
+        profile_id: String,
+        password: String,
+        device_name: String,
+        kind: String,
+        machine: Option<String>,
+    ) -> Result<SignedIn, HubError> {
+        let paired = nearby(&hub);
+        let request = LoginRequest::Cost {
+            profile: profile_id.clone(),
+        };
+        let LoginResponse::Cost {
+            salt,
+            memory_kib,
+            passes,
+        } = self.login_request(&paired, request).await?
+        else {
+            return Err(HubError::Internal("unexpected answer to a cost".into()));
+        };
+        let derived =
+            blocking(move || profile::derive(&password, &salt, memory_kib, passes)).await?;
+        let hub_id: EndpointId = paired
+            .id
+            .parse()
+            .map_err(|_| HubError::Internal("invalid hub id".into()))?;
+        let request = LoginRequest::Login {
+            profile: profile_id,
+            auth_key: derived.auth_key.clone(),
+            name: device_name,
+            kind,
+            machine: machine.map(|raw| machine_tag(&hub_id, &raw)),
+        };
+        match self.login_request(&paired, request).await? {
+            LoginResponse::Unlocked {
+                hub_name,
+                profile,
+                locked,
+            } => {
+                let key = profile::unlock(&derived, &locked).map_err(internal)?;
+                Ok(SignedIn {
+                    hub: PairedHub {
+                        name: hub_name,
+                        ..paired
+                    },
+                    profile: self.unlocked_with(profile, key, Some(locked))?,
+                })
+            }
+            other => Err(HubError::Internal(format!("unexpected answer {other:?}"))),
+        }
+    }
+
     pub async fn status(&self, hub: PairedHub) -> Result<HubStatus, HubError> {
         let mut stream = self.stream(&hub, HUB_ALPN).await?;
         let response = stream.request(&HubRequest::Hello).await?;
@@ -1231,6 +1325,21 @@ impl HubClient {
         stream.finish();
         match response {
             ProfileResponse::Error { message } => Err(HubError::Internal(message)),
+            other => Ok(other),
+        }
+    }
+
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+    async fn login_request(
+        &self,
+        hub: &PairedHub,
+        request: LoginRequest,
+    ) -> Result<LoginResponse, HubError> {
+        let mut stream = self.stream(hub, LOGIN_ALPN).await?;
+        let response = stream.request(&request).await?;
+        stream.finish();
+        match response {
+            LoginResponse::Error { message } => Err(HubError::Internal(message)),
             other => Ok(other),
         }
     }
@@ -1528,6 +1637,16 @@ fn refused(conn: &Connection) -> bool {
     )
 }
 
+//relays come from address lookup
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+fn nearby(hub: &NearbyHub) -> PairedHub {
+    PairedHub {
+        id: hub.id.clone(),
+        name: hub.name.clone(),
+        relays: Vec::new(),
+    }
+}
+
 fn paired_addr(hub: &PairedHub) -> Result<EndpointAddr, HubError> {
     let id: EndpointId = hub
         .id
@@ -1559,6 +1678,7 @@ fn hub_profile(profile: ProfileInfo) -> HubProfile {
             ProfileRole::Member => "member".into(),
         },
         created_at: profile.created_at,
+        butterfly: profile.butterfly,
     }
 }
 
