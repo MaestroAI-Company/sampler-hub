@@ -1,6 +1,6 @@
 [package]
 name = "sampler-hub"
-version = "0.11.1"
+version = "0.12.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -16,7 +16,7 @@ iroh-tickets = "1"
 flate2 = "1"
 keyring = "4"
 mdns-sd = "0.21"
-sampler-hub-proto = { version = "0.11.0", path = "../sampler-hub-proto" }
+sampler-hub-proto = { version = "0.12.0", path = "../sampler-hub-proto" }
 qr2term = "0.3.3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "form", "json"] }
 rusqlite = { version = "0.40", features = ["bundled", "fallible_uint"] }
