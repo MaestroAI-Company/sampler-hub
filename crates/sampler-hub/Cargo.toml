@@ -32,6 +32,8 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 webpki-roots = "1"
 zip = { version = "9", default-features = false, features = ["deflate"] }
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
 
 [target.'cfg(windows)'.build-dependencies]
 tauri-winres = "0.3"

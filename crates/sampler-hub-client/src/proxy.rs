@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
@@ -12,7 +12,12 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use sampler_hub_proto::ForwardHead;
+use sampler_hub_proto::{read_frame, write_frame};
 use tokio::net::TcpListener;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_util::io::ReaderStream;
 
 use crate::{Forwarded, HubClient, HubError, PairedHub, ProxyInfo};
@@ -52,6 +57,7 @@ pub(crate) async fn start(client: Arc<HubClient>, hub: PairedHub) -> Result<Prox
                 });
                 let _ = http1::Builder::new()
                     .serve_connection(TokioIo::new(socket), service)
+                    .with_upgrades()
                     .await;
             });
         }
@@ -88,6 +94,13 @@ async fn forward(
             .filter_map(|(name, value)| Some((name.to_string(), value.to_str().ok()?.to_string())))
             .collect(),
     };
+    if is_websocket(&req) {
+        return realtime(client, hub, head, req).await;
+    }
+    //hub only accepts real upgrades
+    if head.path.split('?').next() == Some("/v1/realtime") {
+        return Ok(plain(StatusCode::BAD_REQUEST, "websocket only".into()));
+    }
     let body = req
         .into_body()
         .collect()
@@ -113,6 +126,72 @@ async fn forward(
         }
         Forwarded::Refused(message) => Ok(plain(StatusCode::BAD_GATEWAY, message)),
     }
+}
+
+fn is_websocket(req: &Request<Incoming>) -> bool {
+    req.headers()
+        .get("upgrade")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
+}
+
+//hub must accept before upgrading
+async fn realtime(
+    client: &HubClient,
+    hub: &PairedHub,
+    head: ForwardHead,
+    mut req: Request<Incoming>,
+) -> Result<Response<ProxyBody>, HubError> {
+    let Some(key) = req
+        .headers()
+        .get("sec-websocket-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|key| derive_accept_key(key.as_bytes()))
+    else {
+        return Ok(plain(StatusCode::BAD_REQUEST, "no websocket key".into()));
+    };
+    let (mut send, mut recv) = match client.realtime(hub, head).await {
+        Ok(stream) => stream,
+        Err(e) => return Ok(plain(StatusCode::BAD_GATEWAY, e.to_string())),
+    };
+    let upgrade = hyper::upgrade::on(&mut req);
+    tokio::spawn(async move {
+        let Ok(upgraded) = upgrade.await else {
+            return;
+        };
+        let socket =
+            WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
+        let (mut to_app, mut from_app) = socket.split();
+        let upstream = async {
+            while let Some(message) = from_app.next().await {
+                match message? {
+                    Message::Text(text) => write_frame(&mut send, &text.as_str()).await?,
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+            anyhow::Ok(())
+        };
+        let downstream = async {
+            while let Some(text) = read_frame::<_, String>(&mut recv).await? {
+                to_app.send(Message::text(text)).await?;
+            }
+            anyhow::Ok(())
+        };
+        //either side ending closes the other
+        tokio::select! {
+            _ = upstream => {}
+            _ = downstream => {}
+        }
+        let _ = to_app.close().await;
+        let _ = send.finish();
+    });
+    let mut response = plain(StatusCode::SWITCHING_PROTOCOLS, String::new());
+    let headers = response.headers_mut();
+    headers.insert("upgrade", "websocket".parse().unwrap());
+    headers.insert("connection", "Upgrade".parse().unwrap());
+    headers.insert("sec-websocket-accept", key.parse().unwrap());
+    Ok(response)
 }
 
 fn plain(status: StatusCode, message: String) -> Response<ProxyBody> {

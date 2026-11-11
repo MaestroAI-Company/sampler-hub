@@ -1,12 +1,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail, ensure};
+use futures_util::{SinkExt, StreamExt};
 use sampler_hub_proto::{
     ForwardHead, ProviderInfo, ProvidersRequest, ProvidersResponse, SCOPE_PROVIDERS, read_frame,
     write_frame,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::protocols::{Access, Peer, Protocol};
 
@@ -172,6 +174,23 @@ impl Providers {
         if !head.path.starts_with('/') {
             bail!("invalid path");
         }
+        if is_realtime(&head.path) {
+            ensure!(
+                head.provider == crate::llama::PROVIDER_ID,
+                "only llama.cpp serves realtime"
+            );
+            ensure!(
+                head.method.eq_ignore_ascii_case("GET"),
+                "realtime opens with GET"
+            );
+            ensure!(
+                self.llama.supports_realtime(),
+                "this llama.cpp build has no realtime endpoint"
+            );
+            let root = base.strip_suffix("/v1").unwrap_or(&base);
+            let url = format!("{}{}", root.replacen("http", "ws", 1), head.path);
+            return relay_realtime(&url, reader, writer).await;
+        }
         let mut body = Vec::new();
         reader
             .take(MAX_REQUEST_BYTES)
@@ -205,4 +224,51 @@ impl Providers {
         }
         Ok(())
     }
+}
+
+fn is_realtime(path: &str) -> bool {
+    path.split('?').next() == Some("/v1/realtime")
+}
+
+//relay text until a side closes
+async fn relay_realtime<R, W>(url: &str, mut reader: R, writer: &mut W) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    let (socket, _) = tokio_tungstenite::connect_async(url).await?;
+    write_frame(
+        writer,
+        &ProvidersResponse::Response {
+            status: 101,
+            headers: Vec::new(),
+        },
+    )
+    .await?;
+    let (mut to_llama, mut from_llama) = socket.split();
+    let upstream = async {
+        while let Some(text) = read_frame::<_, String>(&mut reader).await? {
+            to_llama.send(Message::text(text)).await?;
+        }
+        anyhow::Ok(())
+    };
+    let downstream = async {
+        while let Some(message) = from_llama.next().await {
+            match message? {
+                Message::Text(text) => write_frame(writer, &text.as_str()).await?,
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+        anyhow::Ok(())
+    };
+    //after 101 errors just end
+    let ended = tokio::select! {
+        done = upstream => done,
+        done = downstream => done,
+    };
+    if let Err(e) = ended {
+        tracing::debug!("realtime session ended: {e:#}");
+    }
+    Ok(())
 }

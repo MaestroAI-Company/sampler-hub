@@ -1,7 +1,7 @@
 //llama.cpp on the hub, one llama-server in router mode
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,10 @@ const HF: &str = "https://huggingface.co";
 const MODELS_MAX: &str = "1";
 //companion files are not chat models
 const COMPANIONS: [&str; 5] = ["mmproj-", "mtp-", "dflash-", "eagle3-", "draft-"];
+//models needing mmproj, no reasoning
+const MULTIMODAL_REPOS: [&str; 2] = ["LiquidAI/LFM3-Audio-2B-GGUF", "LiquidAI/LFM3-Omni-2B-GGUF"];
+//first build with realtime
+const REALTIME_BUILD: u64 = 11960;
 const SEARCH_LIMIT: &str = "20";
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const START_POLL: Duration = Duration::from_millis(300);
@@ -33,7 +37,7 @@ const START_POLL: Duration = Duration::from_millis(300);
 const RESOLVE_TTL: Duration = Duration::from_secs(30 * 60);
 
 //official builds from the model makers, smallest first
-const CATALOG: [(&str, &str, &str, u64); 12] = [
+const CATALOG: [(&str, &str, &str, u64); 14] = [
     (
         "ggml-org/Qwen3.5-0.8B-GGUF",
         "Qwen3.5-0.8B-Q4_0.gguf",
@@ -45,6 +49,19 @@ const CATALOG: [(&str, &str, &str, u64); 12] = [
         "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
         "LFM2.5 1.2B",
         730_895_168,
+    ),
+    //sizes include the mmproj companion
+    (
+        "LiquidAI/LFM3-Audio-2B-GGUF",
+        "LFM3-Audio-2B-Q4_K_M.gguf",
+        "LFM3 Audio 2B",
+        1_272_044_064,
+    ),
+    (
+        "LiquidAI/LFM3-Omni-2B-GGUF",
+        "LFM3-Omni-2B-Q4_K_M.gguf",
+        "LFM3 Omni 2B",
+        1_391_216_800,
     ),
     (
         "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
@@ -182,6 +199,8 @@ pub struct Llama {
     enabled: AtomicBool,
     //release pointer or newest nightly
     nightly: AtomicBool,
+    //zero means none
+    attached: AtomicU16,
     usage: crate::usage::Usage,
     options: Mutex<ModelOptions>,
 }
@@ -249,6 +268,7 @@ impl Llama {
             restarting: tokio::sync::Mutex::new(()),
             enabled: AtomicBool::new(true),
             nightly: AtomicBool::new(false),
+            attached: AtomicU16::new(0),
             usage: Default::default(),
             options: Mutex::new(HubSettings::default().model_options()),
         })
@@ -300,11 +320,21 @@ impl Llama {
 
     //the openai endpoint once a model can answer
     pub fn base_url(&self) -> Option<String> {
+        match self.attached.load(Ordering::SeqCst) {
+            0 => {}
+            port => return Some(format!("http://127.0.0.1:{port}/v1")),
+        }
         let inner = self.inner.lock().unwrap();
         match (inner.state, inner.port) {
             (State::Running, Some(port)) => Some(format!("http://127.0.0.1:{port}/v1")),
             _ => None,
         }
+    }
+
+    //serve from a llama-server started elsewhere
+    #[doc(hidden)]
+    pub fn attach(&self, port: u16) {
+        self.attached.store(port, Ordering::SeqCst);
     }
 
     pub fn installed(&self) -> Vec<InstalledModel> {
@@ -315,8 +345,15 @@ impl Llama {
         let mut models: Vec<InstalledModel> = entries
             .flatten()
             .filter_map(|entry| {
-                let file = entry.file_name().to_string_lossy().into_owned();
-                let size = entry.metadata().ok()?.len();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let (file, size) = if entry.path().is_dir() {
+                    //router wants projector beside model
+                    let file = format!("{name}.gguf");
+                    let size = multimodal_size(&entry.path(), &file)?;
+                    (file, size)
+                } else {
+                    (name, entry.metadata().ok()?.len())
+                };
                 let repo = sources.remove(&file);
                 file.ends_with(".gguf")
                     .then_some(InstalledModel { file, size, repo })
@@ -324,6 +361,34 @@ impl Llama {
             .collect();
         models.sort_by(|a, b| a.file.cmp(&b.file));
         models
+    }
+
+    //folders needing a preset
+    fn multimodal_names(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.models_dir()) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                multimodal_size(&entry.path(), &format!("{name}.gguf")).map(|_| name)
+            })
+            .collect()
+    }
+
+    //older builds lack the websocket
+    pub fn supports_realtime(&self) -> bool {
+        self.attached.load(Ordering::SeqCst) != 0
+            || self
+                .inner
+                .lock()
+                .unwrap()
+                .build
+                .as_deref()
+                .and_then(build_number)
+                .is_some_and(|number| number >= REALTIME_BUILD)
     }
 
     pub fn status(&self) -> LlamaStatus {
@@ -662,10 +727,14 @@ impl Llama {
         std::fs::create_dir_all(&models)?;
         let port = free_port()?;
         let log = std::fs::File::create(self.dir.join("llama-server.log"))?;
+        let presets = self.dir.join("presets.ini");
+        std::fs::write(&presets, presets_ini(&self.multimodal_names()))?;
         let mut command = Command::new(exe);
         command
             .arg("--models-dir")
             .arg(&models)
+            .arg("--models-preset")
+            .arg(&presets)
             .args(["--host", "127.0.0.1", "--port", &port.to_string()])
             .args(["--no-webui", "--models-max", MODELS_MAX])
             .args(option_args(*self.options.lock().unwrap()))
@@ -793,9 +862,21 @@ impl Llama {
 
     //resumes a partial file left by a restart
     async fn fetch(&self, repo: &str, file: &str) -> Result<()> {
-        let models = self.models_dir();
-        std::fs::create_dir_all(&models)?;
-        let part = models.join(format!("{file}.part"));
+        let Some(projector) = companion(repo, file) else {
+            return self.fetch_into(repo, file, &self.models_dir()).await;
+        };
+        //router pairs projector by folder
+        let dir = self.models_dir().join(file.trim_end_matches(".gguf"));
+        //model last so install is complete
+        self.fetch_into(repo, &projector, &dir).await?;
+        self.fetch_into(repo, file, &dir).await
+    }
+
+    async fn fetch_into(&self, repo: &str, file: &str, dir: &Path) -> Result<()> {
+        std::fs::create_dir_all(dir)?;
+        let part = dir.join(format!("{file}.part"));
+        //progress keyed by model name
+        let tracked = file.strip_prefix("mmproj-").unwrap_or(file);
         let mut have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
         let mut request = self.http.get(format!("{HF}/{repo}/resolve/main/{file}"));
         if have > 0 {
@@ -814,17 +895,19 @@ impl Llama {
             .open(&part)
             .await?;
         let mut received = have;
-        self.progress(file, received, total);
+        self.progress(tracked, received, total);
         while let Some(chunk) = response.chunk().await? {
             out.write_all(&chunk).await?;
             received += chunk.len() as u64;
-            self.progress(file, received, total);
+            self.progress(tracked, received, total);
         }
         out.flush().await?;
         drop(out);
         ensure!(total == 0 || received == total, "the download ended early");
-        self.set_source(file, Some(repo))?;
-        std::fs::rename(&part, models.join(file))?;
+        if !file.starts_with("mmproj-") {
+            self.set_source(file, Some(repo))?;
+        }
+        std::fs::rename(&part, dir.join(file))?;
         Ok(())
     }
 
@@ -843,6 +926,11 @@ impl Llama {
             task.abort();
         }
         let _ = std::fs::remove_file(self.models_dir().join(format!("{file}.part")));
+        //drop half downloaded folder
+        let dir = self.models_dir().join(file.trim_end_matches(".gguf"));
+        if dir.is_dir() && multimodal_size(&dir, file).is_none() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
         Ok(())
     }
 
@@ -850,12 +938,49 @@ impl Llama {
         check_file(file)?;
         //windows keeps a loaded model locked
         self.stop_server();
-        std::fs::remove_file(self.models_dir().join(file))
-            .with_context(|| format!("cannot delete {file}"))?;
+        let folder = self.models_dir().join(file.trim_end_matches(".gguf"));
+        if folder.is_dir() {
+            std::fs::remove_dir_all(folder)
+        } else {
+            std::fs::remove_file(self.models_dir().join(file))
+        }
+        .with_context(|| format!("cannot delete {file}"))?;
         self.set_source(file, None)?;
         self.refresh();
         Ok(())
     }
+}
+
+//projector beside its model
+fn companion(repo: &str, file: &str) -> Option<String> {
+    MULTIMODAL_REPOS
+        .contains(&repo)
+        .then(|| format!("mmproj-{file}"))
+}
+
+//none unless both files exist
+fn multimodal_size(dir: &Path, file: &str) -> Option<u64> {
+    let model = std::fs::metadata(dir.join(file)).ok()?.len();
+    let projector = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .find(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with("mmproj-") && name.ends_with(".gguf")
+        })?
+        .metadata()
+        .ok()?
+        .len();
+    Some(model + projector)
+}
+
+//one preset per multimodal model
+fn presets_ini(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|name| format!("[{name}]\nreasoning = off\n"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 //best accelerator first, the cpu build always works
@@ -1180,6 +1305,47 @@ mod tests {
         };
         assert_eq!(names(Some("b11819")), ["b11669-vulkan", "b11600-cpu"]);
         assert_eq!(names(None)[0], "b11819-vulkan");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lfm3_models_come_with_their_projector() {
+        for model in catalog().iter().filter(|m| m.repo.contains("LFM3")) {
+            assert_eq!(
+                companion(&model.repo, &model.file),
+                Some(format!("mmproj-{}", model.file))
+            );
+        }
+        assert_eq!(companion("ggml-org/gemma-4-E2B-it-GGUF", "a.gguf"), None);
+        assert_eq!(
+            presets_ini(&["A".into(), "B".into()]),
+            "[A]
+reasoning = off
+
+[B]
+reasoning = off
+"
+        );
+    }
+
+    #[tokio::test]
+    async fn installed_reads_the_multimodal_folder() {
+        let dir = std::env::temp_dir().join(format!("sampler-hub-mm-{}", std::process::id()));
+        let models = dir.join("llama").join("models");
+        let folder = models.join("LFM3-Omni-2B-Q4_K_M");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("LFM3-Omni-2B-Q4_K_M.gguf"), [0u8; 10]).unwrap();
+        let llama = Llama::new(&dir, crate::secrets::http_client().unwrap());
+        //no projector means not installed
+        assert!(llama.installed().is_empty());
+        std::fs::write(folder.join("mmproj-LFM3-Omni-2B-Q4_K_M.gguf"), [0u8; 4]).unwrap();
+        let installed = llama.installed();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].file, "LFM3-Omni-2B-Q4_K_M.gguf");
+        assert_eq!(installed[0].size, 14);
+        assert_eq!(llama.multimodal_names(), ["LFM3-Omni-2B-Q4_K_M"]);
+        llama.delete("LFM3-Omni-2B-Q4_K_M.gguf").unwrap();
+        assert!(!folder.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

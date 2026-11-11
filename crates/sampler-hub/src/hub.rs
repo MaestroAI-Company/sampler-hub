@@ -53,7 +53,18 @@ pub async fn run_with_targets(
     shutdown: impl Future<Output = ()>,
     targets: Vec<Target>,
 ) -> Result<()> {
-    let running = start(data_dir, targets).await?;
+    run_with_llama_port(data_dir, shutdown, targets, None).await
+}
+
+//tests attach a fake llama-server
+#[doc(hidden)]
+pub async fn run_with_llama_port(
+    data_dir: &Path,
+    shutdown: impl Future<Output = ()>,
+    targets: Vec<Target>,
+    llama_port: Option<u16>,
+) -> Result<()> {
+    let running = start(data_dir, targets, llama_port).await?;
     shutdown.await;
     running.stop().await
 }
@@ -81,7 +92,7 @@ impl Running {
     }
 }
 
-async fn start(data_dir: &Path, targets: Vec<Target>) -> Result<Running> {
+async fn start(data_dir: &Path, targets: Vec<Target>, llama_port: Option<u16>) -> Result<Running> {
     //held until the hub stops
     let lock = lock(data_dir)?;
     let config = Config::load(data_dir)?;
@@ -117,6 +128,9 @@ async fn start(data_dir: &Path, targets: Vec<Target>) -> Result<Running> {
     let (sender, latest) = tokio::sync::watch::channel(None);
     let updates = tokio::spawn(update::watch_releases(http.clone(), sender));
     let llama = Llama::new(data_dir, http.clone());
+    if let Some(port) = llama_port {
+        llama.attach(port);
+    }
     let mcp = Mcp::new(data_dir, http.clone(), db.clone(), store.clone());
     //an admin may have turned either off
     mcp.set_enabled(settings.get().mcp_servers);

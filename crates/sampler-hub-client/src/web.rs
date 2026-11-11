@@ -2,10 +2,10 @@
 use std::sync::Arc;
 
 use js_sys::{Promise, Uint8Array};
-use sampler_hub_proto::ForwardHead;
+use sampler_hub_proto::{ForwardHead, read_frame, write_frame};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
@@ -31,6 +31,15 @@ pub struct WebResponse {
     status: u16,
     headers: Vec<(String, String)>,
     body: Arc<Mutex<Body>>,
+}
+
+//text frames both ways
+#[wasm_bindgen]
+pub struct WebRealtime {
+    send: Arc<Mutex<iroh::endpoint::SendStream>>,
+    recv: Arc<Mutex<iroh::endpoint::RecvStream>>,
+    //wakes a pending read
+    cancelled: Arc<Notify>,
 }
 
 fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
@@ -415,6 +424,31 @@ impl WebHubClient {
             }
         }))
     }
+
+    //only llama.cpp serves realtime
+    pub fn realtime(
+        &self,
+        hub: JsValue,
+        provider: String,
+        path: String,
+    ) -> Result<Promise, JsValue> {
+        let (inner, hub) = (self.inner.clone(), from_js::<PairedHub>(hub)?);
+        let head = ForwardHead {
+            provider,
+            method: "GET".into(),
+            path,
+            headers: Vec::new(),
+        };
+        Ok(future_to_promise(async move {
+            let (send, recv) = inner.realtime(&hub, head).await.map_err(hub_error)?;
+            Ok(WebRealtime {
+                send: Arc::new(Mutex::new(send)),
+                recv: Arc::new(Mutex::new(recv)),
+                cancelled: Default::default(),
+            }
+            .into())
+        }))
+    }
 }
 
 #[wasm_bindgen(js_name = qrSvg)]
@@ -480,6 +514,44 @@ impl WebResponse {
             && let Body::Stream(mut stream) = std::mem::replace(&mut *guard, Body::Done)
         {
             let _ = stream.stop(0u32.into());
+        }
+    }
+}
+
+#[wasm_bindgen]
+impl WebRealtime {
+    pub fn send(&self, text: String) -> Promise {
+        let send = self.send.clone();
+        future_to_promise(async move {
+            write_frame(&mut *send.lock().await, &text)
+                .await
+                .map_err(|e| hub_error(HubError::Unreachable(e.to_string())))?;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    //undefined once the session ended
+    pub fn read(&self) -> Promise {
+        let (recv, cancelled) = (self.recv.clone(), self.cancelled.clone());
+        future_to_promise(async move {
+            let mut recv = recv.lock().await;
+            let next = n0_future::future::or(read_frame::<_, String>(&mut *recv), async {
+                cancelled.notified().await;
+                Ok(None)
+            })
+            .await;
+            match next {
+                Ok(Some(text)) => Ok(JsValue::from_str(&text)),
+                Ok(None) => Ok(JsValue::UNDEFINED),
+                Err(e) => Err(hub_error(HubError::Unreachable(e.to_string()))),
+            }
+        })
+    }
+
+    pub fn close(&self) {
+        self.cancelled.notify_one();
+        if let Ok(mut send) = self.send.try_lock() {
+            let _ = send.finish();
         }
     }
 }

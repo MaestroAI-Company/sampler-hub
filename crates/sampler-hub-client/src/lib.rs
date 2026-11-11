@@ -1440,6 +1440,30 @@ impl HubClient {
         }
     }
 
+    //duplex, stream stays open
+    pub(crate) async fn realtime(
+        &self,
+        hub: &PairedHub,
+        head: ForwardHead,
+    ) -> Result<(SendStream, RecvStream), HubError> {
+        let mut stream = self.stream(hub, PROVIDERS_ALPN).await?;
+        write_frame(&mut stream.send, &ProvidersRequest::Forward { head })
+            .await
+            .map_err(unreachable)?;
+        let response = read_frame(&mut stream.recv)
+            .await
+            .map_err(unreachable)?
+            .ok_or_else(|| HubError::Unreachable("hub closed the stream".into()))?;
+        match response {
+            ProvidersResponse::Response { status: 101, .. } => Ok((stream.send, stream.recv)),
+            ProvidersResponse::Response { status, .. } => Err(HubError::Internal(format!(
+                "realtime refused with {status}"
+            ))),
+            ProvidersResponse::Error { message } => Err(HubError::Internal(message)),
+            other => Err(HubError::Internal(format!("unexpected answer {other:?}"))),
+        }
+    }
+
     async fn admin<T>(&self, hub: &PairedHub, request: AdminRequest) -> Result<T, HubError>
     where
         T: From<ProtoSettings>,
