@@ -268,6 +268,12 @@ impl WebHubClient {
         Ok(promise(async move { inner.update_hub(hub).await }))
     }
 
+    #[wasm_bindgen(js_name = checkHubUpdate)]
+    pub fn check_hub_update(&self, hub: JsValue) -> Result<Promise, JsValue> {
+        let (inner, hub) = (self.inner.clone(), from_js::<PairedHub>(hub)?);
+        Ok(promise(async move { inner.check_hub_update(hub).await }))
+    }
+
     #[wasm_bindgen(js_name = removeProfile)]
     pub fn remove_profile(&self, hub: JsValue, id: String) -> Result<Promise, JsValue> {
         let (inner, hub) = (self.inner.clone(), from_js::<PairedHub>(hub)?);
@@ -344,6 +350,12 @@ impl WebHubClient {
     pub fn models_delete(&self, hub: JsValue, file: String) -> Result<Promise, JsValue> {
         let (inner, hub) = (self.inner.clone(), from_js::<PairedHub>(hub)?);
         Ok(promise(async move { inner.models_delete(hub, file).await }))
+    }
+
+    #[wasm_bindgen(js_name = modelsUpdate)]
+    pub fn models_update(&self, hub: JsValue) -> Result<Promise, JsValue> {
+        let (inner, hub) = (self.inner.clone(), from_js::<PairedHub>(hub)?);
+        Ok(promise(async move { inner.models_update(hub).await }))
     }
 
     #[wasm_bindgen(js_name = modelsStatus)]

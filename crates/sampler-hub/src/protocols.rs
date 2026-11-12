@@ -339,6 +339,12 @@ impl Protocol for Admin {
                         message: format!("{e:#}"),
                     },
                 },
+                AdminRequest::CheckUpdate => match crate::update::newer_release(&self.http).await {
+                    Ok(version) => AdminResponse::UpdateChecked { version },
+                    Err(e) => AdminResponse::Error {
+                        message: format!("{e:#}"),
+                    },
+                },
                 AdminRequest::RenameDevice { id, name } => match clean_device_name(&name) {
                     Some(name) if self.store.rename_device(&id, &name)? => {
                         info!("{} renamed a device to {name}", peer.short());

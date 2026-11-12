@@ -51,6 +51,10 @@ enum Command {
         #[arg(short, long, default_value_t = 5)]
         count: u32,
     },
+    #[command(about = "Check GitHub for a newer release, even when update checks are off")]
+    Update,
+    #[command(about = "Check GitHub for a newer llama.cpp build, even when update checks are off")]
+    Llama,
     #[command(about = "Manage the hub background service")]
     Service {
         #[command(subcommand)]
@@ -135,6 +139,31 @@ fn main() -> Result<()> {
             println!("{ticket}");
             Ok(())
         }
+        Command::Update => runtime()?.block_on(async {
+            let http = sampler_hub::secrets::http_client()?;
+            match sampler_hub::update::newer_release(&http).await? {
+                Some(version) => println!(
+                    "sampler-hub {version} is available, you have {}, download it from https://github.com/MaestroAI-Company/sampler-hub/releases/latest",
+                    sampler_hub::update::VERSION
+                ),
+                None => println!("sampler-hub {} is up to date", sampler_hub::update::VERSION),
+            }
+            Ok(())
+        }),
+        Command::Llama => runtime()?.block_on(async {
+            let llama = sampler_hub::llama::Llama::new(&data_dir, sampler_hub::secrets::http_client()?);
+            let latest = llama.latest_build().await?;
+            let installed = llama.installed_tags();
+            if installed.iter().any(|tag| *tag == latest) {
+                println!("llama.cpp {latest} is installed and up to date");
+            } else {
+                println!(
+                    "llama.cpp {latest} is available, installed: {}, the hub fetches it when it starts the models server",
+                    if installed.is_empty() { "none".into() } else { installed.join(", ") }
+                );
+            }
+            Ok(())
+        }),
         Command::Ping { ticket, count } => {
             hub::init_logging(&data_dir, false)?;
             runtime()?.block_on(hub::ping(&data_dir, ticket, count))

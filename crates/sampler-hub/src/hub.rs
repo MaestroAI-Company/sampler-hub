@@ -267,6 +267,7 @@ async fn follow_features(
         let current = *settings.borrow_and_update();
         llama.set_options(current.model_options());
         llama.set_nightly(current.models_nightly);
+        update::set_automatic(current.update_checks);
         //models already on disk start serving, new options need a restart
         if last.is_none_or(|last| {
             last.models != current.models

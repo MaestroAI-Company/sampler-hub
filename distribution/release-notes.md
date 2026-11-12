@@ -1,5 +1,13 @@
-## Pairing codes close once used
+## Update checks you control
 
-When an admin invites a device, Opera now learns from the hub the moment the pairing code is used, so the QR code disappears and the sheet closes on its own.
+Sampler Hub now has a **Check for updates** setting in Opera, under the Sampler preferences. Turn it off and neither the hub nor llama.cpp looks for new versions on GitHub on its own. llama.cpp keeps the build it has installed, the first build is still downloaded when none is installed.
 
-Opera needs its next update to close the invite sheet by itself. Older versions keep working, the code just stays on screen until it is closed.
+You can still check by hand:
+
+- **Tray icon**: a new **Check for updates** item.
+- **Terminal**: `sampler-hub update` checks the hub, `sampler-hub llama` checks llama.cpp.
+- **Opera**: buttons in the Sampler screen to check the hub and to update llama.cpp.
+
+Setting `SAMPLER_HUB_NO_UPDATE_CHECK=1` also turns the automatic checks off, for servers without a settings screen.
+
+Opera 1.0.2 is needed for the new buttons and the setting. Older versions keep working.

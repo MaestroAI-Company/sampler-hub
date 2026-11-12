@@ -199,6 +199,8 @@ pub struct Llama {
     enabled: AtomicBool,
     //release pointer or newest nightly
     nightly: AtomicBool,
+    //next lookup ignores the switch
+    forced: AtomicBool,
     //zero means none
     attached: AtomicU16,
     usage: crate::usage::Usage,
@@ -268,6 +270,7 @@ impl Llama {
             restarting: tokio::sync::Mutex::new(()),
             enabled: AtomicBool::new(true),
             nightly: AtomicBool::new(false),
+            forced: AtomicBool::new(false),
             attached: AtomicU16::new(0),
             usage: Default::default(),
             options: Mutex::new(HubSettings::default().model_options()),
@@ -437,6 +440,23 @@ impl Llama {
         inner.message = message;
     }
 
+    //manual update skips cache
+    pub fn update_now(self: &Arc<Self>) {
+        self.forced.store(true, Ordering::SeqCst);
+        self.inner.lock().unwrap().resolved = None;
+        self.refresh();
+    }
+
+    //newest build ignoring the cache
+    pub async fn latest_build(&self) -> Result<String> {
+        self.inner.lock().unwrap().resolved = None;
+        self.resolve_tag().await
+    }
+
+    pub fn installed_tags(&self) -> Vec<String> {
+        self.installed_builds(None).into_iter().map(|b| b.0).collect()
+    }
+
     //restarts the server so it sees the models on disk
     pub fn refresh(self: &Arc<Self>) {
         let llama = self.clone();
@@ -467,8 +487,15 @@ impl Llama {
 
     async fn install_and_start(&self) -> Result<()> {
         self.set_state(State::Installing, None);
+        //skip lookup when updates are off
+        let forced = self.forced.swap(false, Ordering::SeqCst);
+        let lookup = if !forced && crate::update::checks_disabled() && !self.installed_builds(None).is_empty() {
+            Err(anyhow!("update checks are turned off"))
+        } else {
+            self.resolve_tag().await
+        };
         //keep installed builds when lookup fails
-        match self.resolve_tag().await {
+        match lookup {
             Ok(tag) => {
                 self.inner.lock().unwrap().latest = Some(tag.clone());
                 match self.start_build(&tag).await {
@@ -495,6 +522,7 @@ impl Llama {
                     inner.state = State::Running;
                     inner.message = Some(match skipped {
                         Some(tag) => format!("{tag} did not start, running {older}"),
+                        None if crate::update::checks_disabled() => format!("update checks are off, running {older}"),
                         None => format!("build lookup failed, running {older}"),
                     });
                     info!("llama.cpp runs on {backend} at port {port} with {older}");
@@ -1238,6 +1266,10 @@ impl Models {
                 status(&self.llama)
             }
             ModelsRequest::Status => status(&self.llama),
+            ModelsRequest::UpdateLlama => {
+                self.llama.update_now();
+                status(&self.llama)
+            }
         })
     }
 }

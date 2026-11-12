@@ -1,4 +1,5 @@
 //releases from github, checked and installed by the hub
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
@@ -24,6 +25,19 @@ fn parse(version: &str) -> Option<(u64, u64, u64)> {
     Some((next()?, next()?, next()?))
 }
 
+//follows the hub setting
+static AUTOMATIC: AtomicBool = AtomicBool::new(true);
+
+pub fn set_automatic(on: bool) {
+    AUTOMATIC.store(on, Ordering::SeqCst);
+}
+
+//the setting or the env switch
+pub fn checks_disabled() -> bool {
+    !AUTOMATIC.load(Ordering::SeqCst)
+        || std::env::var("SAMPLER_HUB_NO_UPDATE_CHECK").is_ok_and(|v| !matches!(v.trim(), "" | "0" | "false"))
+}
+
 //none when this build is the newest
 pub async fn newer_release(http: &reqwest::Client) -> Result<Option<String>> {
     let release: Release = http
@@ -42,6 +56,12 @@ pub async fn newer_release(http: &reqwest::Client) -> Result<Option<String>> {
 //keeps the newest release for hello answers
 pub async fn watch_releases(http: reqwest::Client, latest: watch::Sender<Option<String>>) {
     loop {
+        //a stale offer must not linger
+        if checks_disabled() {
+            latest.send_replace(None);
+            tokio::time::sleep(CHECK_EVERY).await;
+            continue;
+        }
         match newer_release(&http).await {
             Ok(found) => {
                 if let Some(version) = &found {

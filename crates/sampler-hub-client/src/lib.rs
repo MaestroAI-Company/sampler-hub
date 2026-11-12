@@ -127,6 +127,7 @@ pub struct HubSettings {
     pub ctx_size: u32,
     pub keep_alive: u32,
     pub parallel: u32,
+    pub update_checks: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -945,6 +946,11 @@ impl HubClient {
             .await
     }
 
+    //the hub fetches the newest build
+    pub async fn models_update(&self, hub: PairedHub) -> Result<LlamaStatus, HubError> {
+        self.models_status_of(&hub, ModelsRequest::UpdateLlama).await
+    }
+
     pub async fn models_status(&self, hub: PairedHub) -> Result<LlamaStatus, HubError> {
         self.models_status_of(&hub, ModelsRequest::Status).await
     }
@@ -956,6 +962,18 @@ impl HubClient {
         stream.finish();
         match response {
             AdminResponse::Updating { version } => Ok(version),
+            AdminResponse::Error { message } => Err(HubError::Internal(message)),
+            other => Err(HubError::Internal(format!("unexpected answer {other:?}"))),
+        }
+    }
+
+    //none when up to date
+    pub async fn check_hub_update(&self, hub: PairedHub) -> Result<Option<String>, HubError> {
+        let mut stream = self.stream(&hub, ADMIN_ALPN).await?;
+        let response = stream.request(&AdminRequest::CheckUpdate).await?;
+        stream.finish();
+        match response {
+            AdminResponse::UpdateChecked { version } => Ok(version),
             AdminResponse::Error { message } => Err(HubError::Internal(message)),
             other => Err(HubError::Internal(format!("unexpected answer {other:?}"))),
         }
@@ -979,6 +997,7 @@ impl HubClient {
             ctx_size: settings.ctx_size,
             keep_alive: settings.keep_alive,
             parallel: settings.parallel,
+            update_checks: settings.update_checks,
         };
         self.admin(&hub, AdminRequest::SetSettings { settings })
             .await
@@ -1774,6 +1793,7 @@ impl From<ProtoSettings> for HubSettings {
             ctx_size: settings.ctx_size,
             keep_alive: settings.keep_alive,
             parallel: settings.parallel,
+            update_checks: settings.update_checks,
         }
     }
 }

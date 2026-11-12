@@ -141,6 +141,8 @@ pub enum AdminRequest {
     SetSettings { settings: HubSettings },
     //install the newest release and restart
     Update,
+    //ask github now
+    CheckUpdate,
     RenameDevice { id: String, name: String },
     //its open connections close at once
     RemoveDevice { id: String },
@@ -180,6 +182,8 @@ pub struct HubSettings {
     pub keep_alive: u32,
     //requests served at once, 0 lets llama.cpp pick
     pub parallel: u32,
+    //off stops update checks
+    pub update_checks: bool,
 }
 
 impl HubSettings {
@@ -211,6 +215,7 @@ impl Default for HubSettings {
             ctx_size: 0,
             keep_alive: 300,
             parallel: 0,
+            update_checks: true,
         }
     }
 }
@@ -224,6 +229,8 @@ pub enum AdminResponse {
     Waiting,
     Settings { settings: HubSettings },
     Updating { version: String },
+    //none when up to date
+    UpdateChecked { version: Option<String> },
     Devices { devices: Vec<DeviceInfo> },
     Profiles { profiles: Vec<ProfileInfo> },
     McpServers { servers: Vec<McpServerSummary> },
@@ -706,6 +713,8 @@ pub enum ModelsRequest {
     Cancel { file: String },
     Delete { file: String },
     Status,
+    //fetch the newest build now
+    UpdateLlama,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -948,6 +957,7 @@ mod tests {
         )
         .unwrap();
         assert!(!settings.models_nightly);
+        assert!(settings.update_checks);
     }
 
     #[tokio::test]

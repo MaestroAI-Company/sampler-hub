@@ -35,6 +35,8 @@ const QR_PANEL_GAP: f64 = 8.0;
 const QR_QUIET_MODULES: usize = 4;
 
 struct Labels {
+    check: &'static str,
+    up_to_date: &'static str,
     update: &'static str,
     update_title: &'static str,
     update_message: &'static str,
@@ -53,6 +55,8 @@ fn labels() -> Labels {
     let french = sys_locale::get_locale().is_some_and(|l| l.starts_with("fr"));
     if french {
         Labels {
+            check: "Rechercher les mises à jour",
+            up_to_date: "Sampler-Hub est à jour.",
             update: "Installer Sampler-Hub {version}",
             update_title: "Mise à jour d'Sampler-Hub",
             update_message: "Sampler-Hub {version} est disponible (vous avez la {current}). L'installer maintenant ? Le hub redémarre en quelques secondes et vos appareils se reconnectent tout seuls.",
@@ -68,6 +72,8 @@ fn labels() -> Labels {
         }
     } else {
         Labels {
+            check: "Check for updates",
+            up_to_date: "Sampler-Hub is up to date.",
             update: "Install Sampler-Hub {version}",
             update_title: "Sampler-Hub update",
             update_message: "Sampler-Hub {version} is available (you have {current}). Install it now? The hub restarts in a few seconds and your devices reconnect on their own.",
@@ -470,9 +476,14 @@ enum UserEvent {
     Menu(MenuEvent),
     //a newer release, none when up to date
     Update(Option<String>),
+    //a manual check
+    Checked(Result<Option<String>, String>),
 }
 
 fn check_updates(runtime: &Handle, proxy: tao::event_loop::EventLoopProxy<UserEvent>) {
+    if update::checks_disabled() {
+        return;
+    }
     runtime.spawn(async move {
         let found = match http_client() {
             Ok(http) => update::newer_release(&http).await,
@@ -484,6 +495,17 @@ fn check_updates(runtime: &Handle, proxy: tao::event_loop::EventLoopProxy<UserEv
             }
             Err(e) => tracing::warn!("update check failed: {e:#}"),
         }
+    });
+}
+
+//ignores the automatic switch
+fn check_now(runtime: &Handle, proxy: tao::event_loop::EventLoopProxy<UserEvent>) {
+    runtime.spawn(async move {
+        let found = match http_client() {
+            Ok(http) => update::newer_release(&http).await,
+            Err(e) => Err(e),
+        };
+        let _ = proxy.send_event(UserEvent::Checked(found.map_err(|e| format!("{e:#}"))));
     });
 }
 
@@ -560,6 +582,7 @@ pub fn run(
     let title = MenuItem::new(format!("Sampler-Hub · {name}"), false, None);
     let devices = MenuItem::new(devices_label(&labels, &data_dir), false, None);
     let pair = MenuItem::new(labels.pair, true, None);
+    let check = MenuItem::new(labels.check, true, None);
     let quit = MenuItem::new(labels.quit, true, None);
     let menu = Menu::new();
     menu.append_items(&[
@@ -567,6 +590,7 @@ pub fn run(
         &devices,
         &PredefinedMenuItem::separator(),
         &pair,
+        &check,
         &quit,
     ])?;
     let icon = icon()?;
@@ -615,6 +639,30 @@ pub fn run(
                     }
                 }
             }
+            Event::UserEvent(UserEvent::Menu(event)) if event.id == *check.id() => {
+                check_now(&runtime, update_proxy.clone());
+            }
+            Event::UserEvent(UserEvent::Checked(result)) => match result {
+                Ok(Some(version)) => {
+                    //offer again after a decline
+                    let _ = menu.remove(&install);
+                    offered = None;
+                    let _ = update_proxy.send_event(UserEvent::Update(Some(version)));
+                }
+                Ok(None) => {
+                    rfd::MessageDialog::new()
+                        .set_title(labels.update_title)
+                        .set_description(labels.up_to_date)
+                        .show();
+                }
+                Err(e) => {
+                    rfd::MessageDialog::new()
+                        .set_title(labels.update_title)
+                        .set_description(format!("{} {e}", labels.update_failed))
+                        .set_level(rfd::MessageLevel::Error)
+                        .show();
+                }
+            },
             Event::UserEvent(UserEvent::Menu(event)) if event.id == *install.id() => {
                 if let Some(version) = offered.clone() {
                     install_update(&runtime, &labels, &version);

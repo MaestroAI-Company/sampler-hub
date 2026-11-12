@@ -78,6 +78,8 @@ Each profile has its own conversations, settings, API keys and hosted MCP server
 | `sampler-hub service install` | Start the hub with your session, now and at every login |
 | `sampler-hub service start` / `stop` / `status` | Control the background service |
 | `sampler-hub service uninstall` | Stop the hub and remove it from your session |
+| `sampler-hub update` | Check GitHub for a newer hub release, even when update checks are off |
+| `sampler-hub llama` | Check GitHub for a newer llama.cpp build, even when update checks are off |
 | `sampler-hub ticket` | Print the hub ticket, for `ping` |
 | `sampler-hub ping <ticket>` | Check that a hub is reachable |
 
@@ -135,6 +137,19 @@ The repository holds four crates:
 | `sampler-hub-proto` | Protocol types shared by the hub and its clients |
 | `sampler-hub-client` | The client library Opera uses, with Kotlin bindings (uniffi) for Android and a WebAssembly build for browsers |
 | `uniffi-bindgen` | Generates the Kotlin bindings |
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+Windows installers are built from this repository by GitHub Actions and signed only after manual approval of each release.
+
+- **Committers and reviewers**: [MaestroAI-Company members](https://github.com/orgs/MaestroAI-Company/people). Ethan Caillat, Charly Charteux
+- **Approvers**: Ethan Caillat, Charly Charteux
+
+## Privacy policy
+
+Sampler Hub only contacts GitHub (update checks and llama.cpp downloads), Hugging Face (model search and downloads) and the iroh relay when a direct connection is not possible. Turn off "Check for updates" in the Sampler settings of Opera, or set `SAMPLER_HUB_NO_UPDATE_CHECK=1`, to stop update checks for the hub and for llama.cpp (the first llama.cpp build is still downloaded when none is installed). See the full [privacy policy](https://maestroai.company/privacy).
 
 ## License
 
