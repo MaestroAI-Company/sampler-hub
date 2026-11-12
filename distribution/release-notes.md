@@ -1,7 +1,5 @@
-## Live voice with local models
+## Pairing codes close once used
 
-The hub can now serve realtime voice sessions from its llama.cpp models, so Opera's live mode works with a model running on your hub, including from a browser through the secure tunnel.
+When an admin invites a device, Opera now learns from the hub the moment the pairing code is used, so the QR code disappears and the sheet closes on its own.
 
-LFM3 audio and omni models are supported, including multimodal model folders with their mmproj file. They show up in the model list and can be removed or cancelled like any other model.
-
-Opera needs its next update to use live voice with the hub. Older versions keep working for everything else.
+Opera needs its next update to close the invite sheet by itself. Older versions keep working, the code just stays on screen until it is closed.
