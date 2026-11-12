@@ -166,6 +166,12 @@ impl WebHubClient {
         Ok(promise(async move { inner.link_watch(hub).await }))
     }
 
+    #[wasm_bindgen(js_name = inviteWatch)]
+    pub fn invite_watch(&self, hub: JsValue) -> Result<Promise, JsValue> {
+        let (inner, hub) = (self.inner.clone(), from_js::<PairedHub>(hub)?);
+        Ok(promise(async move { inner.invite_watch(hub).await }))
+    }
+
     #[wasm_bindgen(js_name = linkApprove)]
     pub fn link_approve(&self, hub: JsValue) -> Result<Promise, JsValue> {
         let (inner, hub) = (self.inner.clone(), from_js::<PairedHub>(hub)?);

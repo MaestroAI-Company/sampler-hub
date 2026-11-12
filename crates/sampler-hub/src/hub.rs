@@ -184,6 +184,7 @@ async fn start(data_dir: &Path, targets: Vec<Target>, llama_port: Option<u16>) -
                     db: db.clone(),
                     mcp: mcp.clone(),
                     data_dir: data_dir.to_path_buf(),
+                    invites: Default::default(),
                     settings: settings.clone(),
                     http: http.clone(),
                     latest,

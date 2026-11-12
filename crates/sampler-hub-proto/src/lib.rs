@@ -135,6 +135,8 @@ pub enum HubResponse {
 pub enum AdminRequest {
     //a pairing code and link for a new device
     Invite,
+    //until the code is used or the wait ends
+    InviteWatch,
     Settings,
     SetSettings { settings: HubSettings },
     //install the newest release and restart
@@ -217,6 +219,9 @@ impl Default for HubSettings {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AdminResponse {
     Invite { code: String, link: String },
+    InviteUsed,
+    //nothing new before the timeout
+    Waiting,
     Settings { settings: HubSettings },
     Updating { version: String },
     Devices { devices: Vec<DeviceInfo> },

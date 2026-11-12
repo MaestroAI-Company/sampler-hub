@@ -1,6 +1,8 @@
 //transport agnostic hub protocols
 
+use std::collections::HashMap;
 use std::future::Future;
+use std::time::Duration;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -264,6 +266,8 @@ pub struct Admin {
     pub db: Arc<Db>,
     pub mcp: Arc<crate::mcp::Mcp>,
     pub data_dir: std::path::PathBuf,
+    //the open invite of each admin
+    pub invites: Arc<std::sync::Mutex<HashMap<String, tokio::sync::watch::Receiver<Option<bool>>>>>,
     pub settings: Arc<crate::settings::Settings>,
     pub http: reqwest::Client,
     pub latest: tokio::sync::watch::Receiver<Option<String>>,
@@ -288,6 +292,12 @@ impl Protocol for Admin {
                 AdminRequest::Invite => match crate::invite::open(&self.data_dir).await {
                     Ok(invite) => {
                         info!("{} opened a pairing code", peer.short());
+                        let (used, watching) = tokio::sync::watch::channel(None);
+                        let done = invite.done;
+                        tokio::spawn(async move {
+                            let _ = used.send(Some(done.await.unwrap_or(false)));
+                        });
+                        self.invites.lock().unwrap().insert(peer.id.clone(), watching);
                         AdminResponse::Invite {
                             code: invite.code,
                             link: invite.link.to_string(),
@@ -297,6 +307,24 @@ impl Protocol for Admin {
                         message: format!("{e:#}"),
                     },
                 },
+                AdminRequest::InviteWatch => {
+                    let watching = self.invites.lock().unwrap().get(&peer.id).cloned();
+                    match watching {
+                        None => AdminResponse::Error {
+                            message: "no invite in progress".into(),
+                        },
+                        Some(mut watching) => {
+                            let wait = watching.wait_for(|used| used.is_some());
+                            match tokio::time::timeout(Duration::from_secs(15), wait).await {
+                                Err(_) => AdminResponse::Waiting,
+                                Ok(Ok(used)) if *used == Some(true) => AdminResponse::InviteUsed,
+                                _ => AdminResponse::Error {
+                                    message: "the pairing code expired".into(),
+                                },
+                            }
+                        }
+                    }
+                }
                 AdminRequest::Settings => AdminResponse::Settings {
                     settings: self.settings.get(),
                 },

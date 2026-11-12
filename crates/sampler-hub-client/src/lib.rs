@@ -833,6 +833,19 @@ impl HubClient {
         }
     }
 
+    //true once a device used the code
+    pub async fn invite_watch(&self, hub: PairedHub) -> Result<bool, HubError> {
+        let mut stream = self.stream(&hub, ADMIN_ALPN).await?;
+        let response = stream.request(&AdminRequest::InviteWatch).await?;
+        stream.finish();
+        match response {
+            AdminResponse::InviteUsed => Ok(true),
+            AdminResponse::Waiting => Ok(false),
+            AdminResponse::Error { message } => Err(HubError::Internal(message)),
+            other => Err(HubError::Internal(format!("unexpected answer {other:?}"))),
+        }
+    }
+
     //any device renames itself, admins rename others
     pub async fn rename_device(
         &self,
