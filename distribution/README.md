@@ -57,3 +57,20 @@ node scripts/pin-hub-client.mjs v1.2.3
 ```
 
 The script only takes stable versions, a beta can't be pinned. Ship the hub before the Opera release that depends on it: a new protocol, like `sampler/login/1`, needs a hub that serves it, and older hubs answer it as outdated.
+
+
+## After a release: old branches
+
+The tag is what keeps a release, not the branch: once `v1.2.3` is tagged on `main`, the `1.2.3` branch no longer holds anything the release needs, so it can be deleted. Betas work the same way, their tags (`v1.2.3-beta.1`) stay and only the working branch goes.
+
+1. Check that the branch is fully merged into `main`, the command must print nothing. If it lists commits, merge what you want to keep first.
+2. Delete the branch on GitHub and locally, then drop the stale remote references:
+
+   ```bash
+   git log main..origin/1.2.3
+   git push origin --delete 1.2.3
+   git branch -d 1.2.3
+   git fetch --prune
+   ```
+
+Branches that aren't tied to a version (`sampler-hub`, `mcp-sandbox`, ect) stay as they are. If a fix is needed on an old release later, a branch can be recreated from its tag with `git checkout -b 1.2.3-hotfix v1.2.3`.
