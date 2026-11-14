@@ -106,9 +106,6 @@ impl Providers {
         //each profile reaches its own servers
         let mut found = self.mcp.providers(profile);
         let settings = self.settings.get();
-        if !settings.share_providers {
-            return found;
-        }
         //listed while starting or failed too
         if settings.models && !self.llama.installed().is_empty() {
             found.push(ProviderInfo {
@@ -121,6 +118,10 @@ impl Providers {
                 .into(),
                 kind: "openai".into(),
             });
+        }
+        //sharing covers host ollama and lm studio
+        if !settings.share_providers {
+            return found;
         }
         for target in self.targets.iter() {
             let probe = self
@@ -155,14 +156,15 @@ impl Providers {
                 .forward(peer.profile()?, id, &head, reader, writer)
                 .await;
         }
-        if !self.settings.get().share_providers {
-            bail!("this hub does not share its providers");
-        }
         let base = if head.provider == crate::llama::PROVIDER_ID {
+            ensure!(self.settings.get().models, "this hub does not share its models");
             self.llama
                 .base_url()
                 .ok_or_else(|| anyhow!("llama.cpp is not running"))?
         } else {
+            if !self.settings.get().share_providers {
+                bail!("this hub does not share its providers");
+            }
             self.targets
                 .iter()
                 .find(|t| t.id == head.provider)
