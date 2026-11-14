@@ -4,6 +4,8 @@ use std::fmt;
 use std::str::FromStr;
 
 use anyhow::{Context, Result, anyhow, bail};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use iroh::{EndpointAddr, EndpointId, RelayUrl};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -118,6 +120,9 @@ pub enum HubResponse {
         usage: Option<HubUsage>,
         #[serde(default)]
         model_options: Option<ModelOptions>,
+        //none on older hubs and empty for n0
+        #[serde(default)]
+        relays: Option<Vec<String>>,
     },
     Unpaired,
     Devices {
@@ -895,18 +900,41 @@ pub struct PairingLink {
     pub secret: String,
 }
 
+//hub key then one relay per line
+fn pack_hub(hub: &EndpointId, relays: &[RelayUrl]) -> String {
+    let mut bytes = hub.as_bytes().to_vec();
+    for relay in relays {
+        bytes.push(b'\n');
+        bytes.extend_from_slice(relay.as_str().as_bytes());
+    }
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn unpack_hub(packed: &str) -> Result<(EndpointId, Vec<RelayUrl>)> {
+    let bytes = URL_SAFE_NO_PAD.decode(packed).context("invalid hub")?;
+    if bytes.len() < 32 {
+        bail!("invalid hub");
+    }
+    let (key, rest) = bytes.split_at(32);
+    let hub = EndpointId::from_bytes(key.try_into().expect("32 bytes")).context("invalid hub id")?;
+    let relays = std::str::from_utf8(rest)
+        .context("invalid relay url")?
+        .split('\n')
+        .filter(|relay| !relay.is_empty())
+        .map(|relay| relay.parse().context("invalid relay url"))
+        .collect::<Result<_>>()?;
+    Ok((hub, relays))
+}
+
+//secret in the fragment like share links
 impl fmt::Display for PairingLink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut url = Url::parse(LINK_PREFIX).expect("static link prefix");
-        {
-            let mut query = url.query_pairs_mut();
-            query.append_pair("id", &self.hub.to_string());
-            query.append_pair("secret", &self.secret);
-            for relay in &self.relays {
-                query.append_pair("relay", relay.as_str());
-            }
-        }
-        f.write_str(url.as_str())
+        write!(
+            f,
+            "{LINK_PREFIX}?h={}#{}",
+            pack_hub(&self.hub, &self.relays),
+            self.secret
+        )
     }
 }
 
@@ -921,11 +949,20 @@ impl FromStr for PairingLink {
         let (mut hub, mut secret, mut relays) = (None, None, Vec::new());
         for (key, value) in url.query_pairs() {
             match key.as_ref() {
+                "h" => {
+                    let (id, packed) = unpack_hub(&value)?;
+                    hub = Some(id);
+                    relays.extend(packed);
+                }
+                //links from older hubs
                 "id" => hub = Some(value.parse().context("invalid hub id")?),
                 "secret" => secret = Some(value.into_owned()),
                 "relay" => relays.push(value.parse().context("invalid relay url")?),
                 _ => {}
             }
+        }
+        if let Some(fragment) = url.fragment().filter(|f| !f.is_empty()) {
+            secret = Some(fragment.to_owned());
         }
         Ok(Self {
             hub: hub.ok_or_else(|| anyhow!("missing hub id"))?,
@@ -946,8 +983,27 @@ mod tests {
             relays: vec!["https://relay.example.com/".parse().unwrap()],
             secret: "00112233445566778899aabbccddeeff".into(),
         };
-        let parsed: PairingLink = link.to_string().parse().unwrap();
+        let text = link.to_string();
+        assert!(!text.contains("relay.example.com"), "{text}");
+        let parsed: PairingLink = text.parse().unwrap();
         assert_eq!(parsed, link);
+        let bare = PairingLink {
+            relays: vec![],
+            ..link
+        };
+        assert_eq!(bare.to_string().parse::<PairingLink>().unwrap(), bare);
+    }
+
+    #[test]
+    fn old_links_still_parse() {
+        let hub = iroh::SecretKey::generate().public();
+        let old = format!(
+            "{LINK_PREFIX}?id={hub}&secret=00112233445566778899aabbccddeeff&relay=https%3A%2F%2Frelay.example.com%2F"
+        );
+        let parsed: PairingLink = old.parse().unwrap();
+        assert_eq!(parsed.hub, hub);
+        assert_eq!(parsed.secret, "00112233445566778899aabbccddeeff");
+        assert_eq!(parsed.relays.len(), 1);
     }
 
     #[test]

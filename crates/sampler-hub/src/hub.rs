@@ -103,6 +103,12 @@ async fn start(data_dir: &Path, targets: Vec<Target>, llama_port: Option<u16>) -
         endpoint.id(),
         data_dir.display()
     );
+    if config.relays.is_empty() {
+        info!("using the public n0 relays");
+    } else {
+        let relays: Vec<String> = config.relays.iter().map(|url| url.to_string()).collect();
+        info!("using custom relays {}", relays.join(", "));
+    }
 
     //relays reconnect if offline at boot
     tokio::spawn({
@@ -172,6 +178,7 @@ async fn start(data_dir: &Path, targets: Vec<Target>, llama_port: Option<u16>) -
                     latest: latest.clone(),
                     usage: Default::default(),
                     settings: settings.clone(),
+                    relays: config.relays.iter().map(|url| url.to_string()).collect(),
                 },
                 &store,
             ),

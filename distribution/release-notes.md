@@ -1,13 +1,23 @@
-## Update checks you control
+## Use your own relay
 
-Sampler Hub now has a **Check for updates** setting in Opera, under the Sampler preferences. Turn it off and neither the hub nor llama.cpp looks for new versions on GitHub on its own. llama.cpp keeps the build it has installed, the first build is still downloaded when none is installed.
+Sampler Hub can use your own [iroh relay](https://github.com/n0-computer/iroh/tree/main/iroh-relay) instead of the public ones run by n0. Add it to `config.toml` in the hub data directory and restart the hub:
 
-You can still check by hand:
+```toml
+relays = ["https://relay.example.com/"]
+```
 
-- **Tray icon**: a new **Check for updates** item.
-- **Terminal**: `sampler-hub update` checks the hub, `sampler-hub llama` checks llama.cpp.
-- **Opera**: buttons in the Sampler screen to check the hub and to update llama.cpp.
+- Devices paired afterwards get the relay in the pairing link.
+- Devices already paired keep finding the hub and switch to the new relay on their own, no need to pair again.
+- The next Opera release shows the relay in the Sampler Hub settings.
 
-Setting `SAMPLER_HUB_NO_UPDATE_CHECK=1` also turns the automatic checks off, for servers without a settings screen.
+The [custom relay guide](https://maestroai.company/docs/advanced/custom-relay/) explains how to host one.
 
-Opera 1.0.2 is needed for the new buttons and the setting. Older versions keep working.
+## Shorter pairing links
+
+Pairing links and QR codes are shorter, and the relay address no longer shows in clear.
+
+The next Opera release is needed to scan the new QR codes. Until then, pair with the code shown under the QR code.
+
+## Fixes
+
+- The Linux data directory is `~/.local/share/sampler-hub`, the docs said `samplerhub`.

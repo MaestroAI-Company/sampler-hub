@@ -117,7 +117,22 @@ The hub keeps its data here:
 |---|---|
 | Windows | `%LOCALAPPDATA%\MaestroAI-Company\Sampler-Hub\data` |
 | macOS | `~/Library/Application Support/company.MaestroAI-Company.Sampler-Hub` |
-| Linux | `~/.local/share/samplerhub` |
+| Linux | `~/.local/share/sampler-hub` |
+
+## Use your own relay
+
+By default the hub uses the public iroh relays run by n0. To use your own [iroh-relay](https://github.com/n0-computer/iroh/tree/main/iroh-relay) instead, create `config.toml` in the data directory and restart the hub:
+
+```toml
+relays = ["https://relay.example.com/"]
+```
+
+- The relay needs HTTPS on its own domain (browsers only reach the hub through it) and a release compatible with iroh 1.x.
+- Devices paired afterwards get the relay in the pairing link. Already paired devices still find the hub, because it publishes its current relay through iroh address lookup. Once they reach it, they keep the new relay.
+- The same applies when you move the hub to another relay later, or back to the public ones by removing the line.
+- Opera shows a custom relay in **Sampler › Preferences**.
+
+Devices keep the public n0 relay as their own home relay and still use n0 address lookup, which only maps the hub key to its relay URL. Your traffic to the hub goes through your relay.
 
 ## Build from source
 
@@ -128,6 +143,17 @@ cargo build --release -p sampler-hub                         # sampler-hub and s
 cargo build --release -p sampler-hub --no-default-features   # sampler-hub only, for headless servers
 cargo test --workspace
 ```
+
+### Development hub
+
+From the repository root, `cargo dev-hub` runs a disposable hub next to the installed one, with its data in `target/dev-hub`:
+
+```sh
+cargo dev-hub run     # run the hub in the foreground
+cargo dev-hub pair    # print a pairing code and QR
+```
+
+To use a relay, write `target/dev-hub/config.toml` as in [Use your own relay](#use-your-own-relay). To start over, delete `target/dev-hub` (or run `cargo clean`). Opera pairs with only one hub, so pairing a phone to the dev hub replaces its current pairing.
 
 The repository holds four crates:
 

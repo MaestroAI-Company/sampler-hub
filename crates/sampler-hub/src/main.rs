@@ -154,7 +154,7 @@ fn main() -> Result<()> {
             let llama = sampler_hub::llama::Llama::new(&data_dir, sampler_hub::secrets::http_client()?);
             let latest = llama.latest_build().await?;
             let installed = llama.installed_tags();
-            if installed.iter().any(|tag| *tag == latest) {
+            if installed.contains(&latest) {
                 println!("llama.cpp {latest} is installed and up to date");
             } else {
                 println!(

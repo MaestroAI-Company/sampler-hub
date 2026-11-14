@@ -242,6 +242,8 @@ pub struct HubStatus {
     pub ctx_size: Option<u32>,
     pub keep_alive: Option<u32>,
     pub parallel: Option<u32>,
+    //none on older hubs and empty for n0
+    pub relays: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1099,6 +1101,7 @@ impl HubClient {
                 update,
                 usage,
                 model_options,
+                relays,
             } => Ok(HubStatus {
                 name,
                 version,
@@ -1109,6 +1112,7 @@ impl HubClient {
                 ctx_size: model_options.map(|o| o.ctx_size),
                 keep_alive: model_options.map(|o| o.keep_alive),
                 parallel: model_options.map(|o| o.parallel),
+                relays,
             }),
             other => Err(HubError::Internal(format!("unexpected answer {other:?}"))),
         }

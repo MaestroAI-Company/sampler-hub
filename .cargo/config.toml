@@ -1,0 +1,2 @@
+[alias]
+dev-hub = "run -p sampler-hub --bin sampler-hub -- --data-dir target/dev-hub"

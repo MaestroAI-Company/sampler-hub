@@ -180,6 +180,8 @@ pub struct Session {
     pub usage: Arc<crate::usage::Usage>,
     //every device shows the model options
     pub settings: Arc<crate::settings::Settings>,
+    //devices refresh the relays they kept
+    pub relays: Arc<[String]>,
 }
 
 impl Protocol for Session {
@@ -207,6 +209,7 @@ impl Protocol for Session {
                         update: self.latest.borrow().clone(),
                         usage,
                         model_options: Some(self.settings.get().model_options()),
+                        relays: Some(self.relays.to_vec()),
                     }
                 }
                 HubRequest::Devices => HubResponse::Devices {
@@ -616,6 +619,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
+            relays: Arc::new([]),
         };
         let ids = |id: &str| -> Vec<String> {
             let peer = still_allowed(&store, id, Access::Paired).unwrap().unwrap();
