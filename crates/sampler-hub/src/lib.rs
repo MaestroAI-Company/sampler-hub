@@ -6,6 +6,7 @@ pub mod invite;
 pub mod lan;
 pub mod llama;
 pub mod mcp;
+pub mod name;
 pub mod profiles;
 pub mod protocols;
 pub mod providers;

@@ -32,12 +32,6 @@ impl Config {
         }
     }
 
-    pub fn hub_name(&self) -> String {
-        self.name
-            .clone()
-            .unwrap_or_else(|| gethostname::gethostname().to_string_lossy().into_owned())
-    }
-
     pub fn relay_mode(&self) -> RelayMode {
         if self.relays.is_empty() {
             RelayMode::Default

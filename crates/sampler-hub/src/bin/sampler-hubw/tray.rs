@@ -559,7 +559,7 @@ pub fn run(
     hub_thread: JoinHandle<()>,
 ) -> Result<()> {
     let labels = labels();
-    let name = Config::load(&data_dir)?.hub_name();
+    let name = sampler_hub::name::HubName::load(&data_dir, Config::load(&data_dir)?.name).get();
 
     #[allow(unused_mut)]
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();

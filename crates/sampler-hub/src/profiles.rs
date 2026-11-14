@@ -255,7 +255,7 @@ impl Profiles {
 pub struct Login {
     pub profiles: Profiles,
     pub settings: Arc<Settings>,
-    pub name: Arc<str>,
+    pub name: Arc<crate::name::HubName>,
 }
 
 impl std::fmt::Debug for Login {
@@ -331,7 +331,7 @@ impl Login {
                 })?;
                 info!("{name} ({}) signed into {}", short(&peer.id), info.name);
                 LoginResponse::Unlocked {
-                    hub_name: self.name.to_string(),
+                    hub_name: self.name.get(),
                     profile: info,
                     locked: key.locked,
                 }

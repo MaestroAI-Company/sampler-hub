@@ -149,6 +149,8 @@ pub enum AdminRequest {
     //ask github now
     CheckUpdate,
     RenameDevice { id: String, name: String },
+    //empty resets to config or hostname
+    RenameHub { name: String },
     //its open connections close at once
     RemoveDevice { id: String },
     //with its data, devices and servers
@@ -237,6 +239,8 @@ pub enum AdminResponse {
     //none when up to date
     UpdateChecked { version: Option<String> },
     Devices { devices: Vec<DeviceInfo> },
+    //the name devices see now
+    HubRenamed { name: String },
     Profiles { profiles: Vec<ProfileInfo> },
     McpServers { servers: Vec<McpServerSummary> },
     Error { message: String },
@@ -732,13 +736,19 @@ pub enum ModelsResponse {
     Error { message: String },
 }
 
-//recommended models, picked by hand
+//hugging face or static fallback models
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogModel {
     pub repo: String,
     pub file: String,
     pub name: String,
     pub size: u64,
+    //at most half the hub memory
+    #[serde(default)]
+    pub fits: bool,
+    //the one the hub suggests
+    #[serde(default)]
+    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

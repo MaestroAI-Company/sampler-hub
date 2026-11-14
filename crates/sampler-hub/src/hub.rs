@@ -21,6 +21,7 @@ use crate::db::Db;
 use crate::lan;
 use crate::llama::{Llama, Models};
 use crate::mcp::{Mcp, McpAdmin};
+use crate::name::HubName;
 use crate::profiles::{Links, Login, Profiles};
 use crate::protocols::{Admin, Pair, Ping, Protocol, Session, admit, still_allowed};
 use crate::providers::{Providers, Target, default_targets};
@@ -120,10 +121,11 @@ async fn start(data_dir: &Path, targets: Vec<Target>, llama_port: Option<u16>) -
     });
 
     let settings = Arc::new(Settings::load(data_dir)?);
+    let name = Arc::new(HubName::load(data_dir, config.name.clone()));
     let lan = tokio::spawn(follow_lan_setting(
         settings.subscribe(),
         endpoint.id().to_string(),
-        config.hub_name(),
+        name.clone(),
         endpoint.bound_sockets(),
     ));
     let store = Arc::new(Store::new(data_dir));
@@ -146,7 +148,6 @@ async fn start(data_dir: &Path, targets: Vec<Target>, llama_port: Option<u16>) -
         llama.clone(),
         mcp.clone(),
     ));
-    let name: Arc<str> = config.hub_name().into();
     let links = Arc::new(Links::default());
     //one lockout for both password paths
     let profiles = Profiles {
@@ -193,6 +194,7 @@ async fn start(data_dir: &Path, targets: Vec<Target>, llama_port: Option<u16>) -
                     data_dir: data_dir.to_path_buf(),
                     invites: Default::default(),
                     settings: settings.clone(),
+                    name: name.clone(),
                     http: http.clone(),
                     latest,
                 },
@@ -293,17 +295,28 @@ async fn follow_features(
     }
 }
 
-//announces while the setting allows it
+//announces while allowed, again on rename
 async fn follow_lan_setting(
     mut settings: tokio::sync::watch::Receiver<sampler_hub_proto::HubSettings>,
     id: String,
-    name: String,
+    hub_name: Arc<HubName>,
     sockets: Vec<SocketAddr>,
 ) {
     let Some(port) = sockets.iter().find(|s| s.is_ipv4()).map(|s| s.port()) else {
         return;
     };
+    let mut names = hub_name.subscribe();
+    //catches cli edits from another process
+    let reread = async {
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tick.tick().await;
+            hub_name.get();
+        }
+    };
+    tokio::pin!(reread);
     loop {
+        let name = names.borrow_and_update().clone();
         let announcement = if settings.borrow_and_update().lan_discovery {
             lan::announce(&id, &name, port)
                 .inspect_err(|e| warn!("not announced on the local network: {e:#}"))
@@ -311,7 +324,12 @@ async fn follow_lan_setting(
         } else {
             None
         };
-        if settings.changed().await.is_err() {
+        let closed = tokio::select! {
+            changed = settings.changed() => changed.is_err(),
+            changed = names.changed() => changed.is_err(),
+            _ = &mut reread => unreachable!(),
+        };
+        if closed {
             return;
         }
         drop(announcement);

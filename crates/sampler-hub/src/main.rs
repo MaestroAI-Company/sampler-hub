@@ -43,6 +43,13 @@ enum Command {
         #[command(subcommand)]
         action: Option<ProfilesAction>,
     },
+    #[command(about = "Show or change the name devices see")]
+    Name {
+        #[arg(conflicts_with = "reset", help = "New name, shown to devices")]
+        name: Option<String>,
+        #[arg(long, help = "Go back to config.toml or the machine hostname")]
+        reset: bool,
+    },
     #[command(about = "Print the hub ticket and its QR code, for ping")]
     Ticket,
     #[command(about = "Check that a hub is reachable")]
@@ -133,6 +140,7 @@ fn main() -> Result<()> {
         }
         Command::Devices { action } => devices(&data_dir, action.unwrap_or(DevicesAction::List)),
         Command::Profiles { action } => profiles(&data_dir, action.unwrap_or(ProfilesAction::List)),
+        Command::Name { name, reset } => rename(&data_dir, name, reset),
         Command::Ticket => {
             let ticket = hub::ticket(&data_dir)?.to_string();
             qr2term::print_qr(&ticket)?;
@@ -320,4 +328,24 @@ async fn shutdown_signal() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
+}
+
+fn rename(data_dir: &Path, name: Option<String>, reset: bool) -> Result<()> {
+    let hub_name = sampler_hub::name::HubName::load(data_dir, config::Config::load(data_dir)?.name);
+    if name.is_none() && !reset {
+        let (name, source) = hub_name.resolve();
+        println!("{name} ({source})");
+        return Ok(());
+    }
+    //an empty name resets
+    let name = hub_name.set(&name.unwrap_or_default())?;
+    if reset {
+        println!("hub name reset to {name}");
+    } else {
+        println!("hub renamed to {name}");
+    }
+    if hub::is_running(data_dir) {
+        println!("devices see it within a minute");
+    }
+    Ok(())
 }

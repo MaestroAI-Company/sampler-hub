@@ -119,7 +119,7 @@ impl Protocol for Ping {
 #[derive(Debug, Clone)]
 pub struct Pair {
     pub store: Arc<Store>,
-    pub name: Arc<str>,
+    pub name: Arc<crate::name::HubName>,
     pub links: Arc<Links>,
 }
 
@@ -159,7 +159,7 @@ impl Protocol for Pair {
                 }
                 info!("paired {label}");
                 PairResponse::Paired {
-                    hub_name: self.name.to_string(),
+                    hub_name: self.name.get(),
                 }
             }
             Err(reason) => {
@@ -175,7 +175,7 @@ impl Protocol for Pair {
 #[derive(Debug, Clone)]
 pub struct Session {
     pub store: Arc<Store>,
-    pub name: Arc<str>,
+    pub name: Arc<crate::name::HubName>,
     pub latest: tokio::sync::watch::Receiver<Option<String>>,
     pub usage: Arc<crate::usage::Usage>,
     //every device shows the model options
@@ -204,7 +204,7 @@ impl Protocol for Session {
                         }
                     });
                     HubResponse::Hello {
-                        name: self.name.to_string(),
+                        name: self.name.get(),
                         version: env!("CARGO_PKG_VERSION").into(),
                         update: self.latest.borrow().clone(),
                         usage,
@@ -272,6 +272,7 @@ pub struct Admin {
     //the open invite of each admin
     pub invites: Arc<std::sync::Mutex<HashMap<String, tokio::sync::watch::Receiver<Option<bool>>>>>,
     pub settings: Arc<crate::settings::Settings>,
+    pub name: Arc<crate::name::HubName>,
     pub http: reqwest::Client,
     pub latest: tokio::sync::watch::Receiver<Option<String>>,
 }
@@ -362,6 +363,11 @@ impl Protocol for Admin {
                         message: "a device needs a name".into(),
                     },
                 },
+                AdminRequest::RenameHub { name } => {
+                    let name = self.name.set(&name)?;
+                    info!("{} renamed the hub to {name}", peer.short());
+                    AdminResponse::HubRenamed { name }
+                }
                 AdminRequest::RemoveDevice { id } => {
                     if self.store.remove_device(&id)? {
                         info!(
@@ -609,7 +615,10 @@ mod tests {
         }
         let session = Session {
             store: store.clone(),
-            name: "hub".into(),
+            name: Arc::new(crate::name::HubName::load(
+                &std::env::temp_dir().join("sampler-hub-no-name"),
+                None,
+            )),
             latest: tokio::sync::watch::channel(None).1,
             usage: Default::default(),
             //no file, the defaults

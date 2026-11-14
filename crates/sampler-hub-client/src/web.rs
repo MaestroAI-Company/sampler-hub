@@ -225,6 +225,12 @@ impl WebHubClient {
         ))
     }
 
+    #[wasm_bindgen(js_name = renameHub)]
+    pub fn rename_hub(&self, hub: JsValue, name: String) -> Result<Promise, JsValue> {
+        let (inner, hub) = (self.inner.clone(), from_js::<PairedHub>(hub)?);
+        Ok(promise(async move { inner.rename_hub(hub, name).await }))
+    }
+
     #[wasm_bindgen(js_name = removeDevice)]
     pub fn remove_device(&self, hub: JsValue, id: String) -> Result<Promise, JsValue> {
         let (inner, hub) = (self.inner.clone(), from_js::<PairedHub>(hub)?);

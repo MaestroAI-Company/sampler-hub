@@ -393,3 +393,58 @@ async fn nearby_hubs_on_lan() {
     hub.await.unwrap().unwrap();
     let _ = std::fs::remove_dir_all(&data_dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hub_rename() {
+    let data_dir = std::env::temp_dir().join(format!("sampler-hub-rename-{}", random_hex::<8>()));
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let hub = tokio::spawn({
+        let data_dir = data_dir.clone();
+        async move {
+            sampler_hub::hub::run(&data_dir, async {
+                let _ = stop_rx.await;
+            })
+            .await
+        }
+    });
+
+    let phone = new_client();
+    let hub_ref = pair(&phone, &data_dir, "phone").await;
+    let fallback = sampler_hub::name::hostname();
+    assert_eq!(phone.status(hub_ref.clone()).await.unwrap().name, fallback);
+
+    //trimmed like device names
+    let name = phone
+        .rename_hub(hub_ref.clone(), "  Studio  ".into())
+        .await
+        .unwrap();
+    assert_eq!(name, "Studio");
+    assert_eq!(phone.status(hub_ref.clone()).await.unwrap().name, "Studio");
+    assert_eq!(
+        std::fs::read_to_string(data_dir.join("name.txt")).unwrap(),
+        "Studio"
+    );
+
+    //a member cannot rename the hub
+    let browser = new_client();
+    let link = sampler_hub::hub::pairing_link(&data_dir).unwrap().to_string();
+    browser
+        .pair(link, "browser".into(), "web".into(), None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        browser.rename_hub(hub_ref.clone(), "Nope".into()).await,
+        Err(HubError::Unauthorized)
+    ));
+    assert_eq!(phone.status(hub_ref.clone()).await.unwrap().name, "Studio");
+
+    //empty goes back to the fallback
+    let name = phone.rename_hub(hub_ref.clone(), "  ".into()).await.unwrap();
+    assert_eq!(name, fallback);
+    assert_eq!(phone.status(hub_ref.clone()).await.unwrap().name, fallback);
+    assert!(!data_dir.join("name.txt").exists());
+
+    stop_tx.send(()).unwrap();
+    hub.await.unwrap().unwrap();
+    let _ = std::fs::remove_dir_all(&data_dir);
+}

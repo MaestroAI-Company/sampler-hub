@@ -10,7 +10,7 @@ use sampler_hub_proto::{
     CatalogModel, HubSettings, HubUsage, InstalledModel, LlamaStatus, ModelDownload, ModelFile,
     ModelOptions, ModelRepo, ModelsRequest, ModelsResponse, SCOPE_ADMIN, read_frame, write_frame,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::process::{Child, Command};
@@ -125,7 +125,8 @@ const CATALOG: [(&str, &str, &str, u64); 14] = [
     ),
 ];
 
-pub fn catalog() -> Vec<CatalogModel> {
+//fallback without network or cache
+fn static_catalog() -> Vec<CatalogModel> {
     CATALOG
         .iter()
         .map(|(repo, file, name, size)| CatalogModel {
@@ -133,9 +134,155 @@ pub fn catalog() -> Vec<CatalogModel> {
             file: file.to_string(),
             name: name.to_string(),
             size: *size,
+            fits: false,
+            recommended: false,
         })
         .collect()
 }
+
+//same makers as the static list
+const CATALOG_AUTHORS: [&str; 4] = ["ggml-org", "LiquidAI", "mistralai", "ibm-granite"];
+const CATALOG_PER_AUTHOR: &str = "10";
+const CATALOG_FILE: &str = "catalog.json";
+//refreshed in background after a day
+const CATALOG_TTL: u64 = 24 * 60 * 60;
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
+//chat pipelines only, no embeddings
+const CATALOG_PIPELINES: [&str; 4] = [
+    "text-generation",
+    "image-text-to-text",
+    "audio-text-to-text",
+    "any-to-any",
+];
+
+#[derive(Serialize, Deserialize)]
+struct CatalogCache {
+    fetched: u64,
+    models: Vec<CatalogModel>,
+}
+
+#[derive(Deserialize)]
+struct HfCatalogRepo {
+    id: String,
+    #[serde(default)]
+    pipeline_tag: Option<String>,
+    //false, else the gating mode
+    #[serde(default)]
+    gated: serde_json::Value,
+}
+
+//smallest first, flags follow machine memory
+fn flag_models(mut models: Vec<CatalogModel>, total_memory: u64) -> Vec<CatalogModel> {
+    models.sort_by_key(|m| m.size);
+    //zero is unknown, nothing ruled out
+    let (half, quarter) = match total_memory {
+        0 => (u64::MAX, 0),
+        total => (total / 2, total / 4),
+    };
+    for model in &mut models {
+        model.fits = model.size <= half;
+        model.recommended = false;
+    }
+    let pick = models.iter().rposition(|m| m.size <= quarter).unwrap_or(0);
+    if let Some(model) = models.get_mut(pick) {
+        model.recommended = true;
+    }
+    models
+}
+
+fn total_memory() -> u64 {
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    system.total_memory()
+}
+
+//one quant per repo, q4_k_m first
+fn pick_file(repo: &str, entries: &[HfEntry]) -> Option<CatalogModel> {
+    check_repo(repo).ok()?;
+    let files: Vec<&HfEntry> = entries
+        .iter()
+        .filter(|e| e.kind == "file" && check_file(&e.path).is_ok())
+        .filter(|e| !COMPANIONS.iter().any(|p| e.path.starts_with(p)))
+        .filter(|e| !e.path.contains("-mmproj") && !e.path.contains("-of-0"))
+        .collect();
+    let find = |quant: &str| {
+        files
+            .iter()
+            .find(|e| e.path.to_ascii_uppercase().contains(quant))
+    };
+    let model = find("Q4_K_M").or_else(|| find("Q4_0"))?;
+    let mut size = model.size;
+    if let Some(projector) = companion(repo, &model.path) {
+        size += entries.iter().find(|e| e.path == projector)?.size;
+    }
+    let name = repo.split_once('/')?.1;
+    let name = name.strip_suffix("-GGUF").unwrap_or(name);
+    Some(CatalogModel {
+        repo: repo.to_string(),
+        file: model.path.clone(),
+        name: name.replace(['-', '_'], " "),
+        size,
+        fits: false,
+        recommended: false,
+    })
+}
+
+async fn tree(http: &reqwest::Client, repo: &str) -> Result<Vec<HfEntry>> {
+    Ok(http
+        .get(format!("{HF}/api/models/{repo}/tree/main"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
+}
+
+//top downloaded gguf repos per maker
+async fn fetch_catalog(http: &reqwest::Client) -> Result<Vec<CatalogModel>> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for author in CATALOG_AUTHORS {
+        let url = reqwest::Url::parse_with_params(
+            &format!("{HF}/api/models"),
+            &[
+                ("author", author),
+                ("filter", "gguf"),
+                ("sort", "downloads"),
+                ("limit", CATALOG_PER_AUTHOR),
+                ("expand[]", "pipeline_tag"),
+                ("expand[]", "gated"),
+            ],
+        )?;
+        let repos: Vec<HfCatalogRepo> = http
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        for repo in repos {
+            //many ggml-org chat repos carry no tag
+            let chat = repo
+                .pipeline_tag
+                .as_deref()
+                .is_none_or(|tag| CATALOG_PIPELINES.contains(&tag));
+            if !chat || repo.gated.as_bool() != Some(false) {
+                continue;
+            }
+            let http = http.clone();
+            tasks.spawn(async move {
+                let entries = tree(&http, &repo.id).await.ok()?;
+                pick_file(&repo.id, &entries)
+            });
+        }
+    }
+    let mut models = Vec::new();
+    while let Some(done) = tasks.join_next().await {
+        models.extend(done?);
+    }
+    ensure!(!models.is_empty(), "no model found on hugging face");
+    Ok(models)
+}
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -205,11 +352,63 @@ pub struct Llama {
     attached: AtomicU16,
     usage: crate::usage::Usage,
     options: Mutex<ModelOptions>,
+    //one catalog refresh at a time
+    refreshing: AtomicBool,
 }
 
 impl std::fmt::Debug for Llama {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Llama")
+    }
+}
+
+impl Llama {
+    //day cache, static list when offline
+    pub async fn catalog(self: &Arc<Self>) -> Vec<CatalogModel> {
+        let path = self.dir.join(CATALOG_FILE);
+        let cached: Option<CatalogCache> = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let models = match cached {
+            Some(cache)
+                if crate::store::unix_now().saturating_sub(cache.fetched) < CATALOG_TTL =>
+            {
+                cache.models
+            }
+            Some(cache) => {
+                //old list served while refreshing
+                if !self.refreshing.swap(true, Ordering::SeqCst) {
+                    let llama = self.clone();
+                    tokio::spawn(async move {
+                        let _ = llama.refresh_catalog().await;
+                        llama.refreshing.store(false, Ordering::SeqCst);
+                    });
+                }
+                cache.models
+            }
+            None => self.refresh_catalog().await.unwrap_or_else(|e| {
+                warn!("model catalog not loaded: {e:#}");
+                static_catalog()
+            }),
+        };
+        flag_models(models, total_memory())
+    }
+
+    async fn refresh_catalog(&self) -> Result<Vec<CatalogModel>> {
+        let models = tokio::time::timeout(CATALOG_TIMEOUT, fetch_catalog(&self.http))
+            .await
+            .context("hugging face did not answer")??;
+        std::fs::create_dir_all(&self.dir)?;
+        let cache = CatalogCache {
+            fetched: crate::store::unix_now(),
+            models: models.clone(),
+        };
+        //atomic write survives a crash
+        let path = self.dir.join(CATALOG_FILE);
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&cache)?)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(models)
     }
 }
 
@@ -274,6 +473,7 @@ impl Llama {
             attached: AtomicU16::new(0),
             usage: Default::default(),
             options: Mutex::new(HubSettings::default().model_options()),
+            refreshing: AtomicBool::new(false),
         })
     }
 
@@ -823,14 +1023,7 @@ impl Llama {
     //chat models only, split files are left out
     pub async fn files(&self, repo: &str) -> Result<Vec<ModelFile>> {
         check_repo(repo)?;
-        let entries: Vec<HfEntry> = self
-            .http
-            .get(format!("{HF}/api/models/{repo}/tree/main"))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let entries = tree(&self.http, repo).await?;
         Ok(entries
             .into_iter()
             .filter(|e| e.kind == "file" && check_file(&e.path).is_ok())
@@ -1246,7 +1439,9 @@ impl Models {
             status: llama.status(),
         };
         Ok(match request {
-            ModelsRequest::Catalog => ModelsResponse::Catalog { models: catalog() },
+            ModelsRequest::Catalog => ModelsResponse::Catalog {
+                models: self.llama.catalog().await,
+            },
             ModelsRequest::Search { query } => ModelsResponse::Repos {
                 repos: self.llama.search(&query).await?,
             },
@@ -1289,9 +1484,75 @@ mod tests {
         assert!(check_repo("noslash").is_err());
     }
 
+    fn sized(sizes: &[u64]) -> Vec<CatalogModel> {
+        sizes
+            .iter()
+            .map(|&size| CatalogModel {
+                repo: "a/b".into(),
+                file: "b.gguf".into(),
+                name: "b".into(),
+                size,
+                fits: false,
+                recommended: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn catalog_flags_follow_the_memory() {
+        //16 gb fits 8, recommends 4
+        let gb = 1_000_000_000;
+        let models = flag_models(sized(&[20 * gb, 3 * gb, 8 * gb, 5 * gb]), 16 * gb);
+        let sizes: Vec<u64> = models.iter().map(|m| m.size / gb).collect();
+        assert_eq!(sizes, [3, 5, 8, 20]);
+        let fits: Vec<bool> = models.iter().map(|m| m.fits).collect();
+        assert_eq!(fits, [true, true, true, false]);
+        let picked: Vec<bool> = models.iter().map(|m| m.recommended).collect();
+        assert_eq!(picked, [true, false, false, false]);
+        //tiny machine still gets the smallest
+        let models = flag_models(sized(&[3 * gb, 5 * gb]), gb);
+        assert!(models[0].recommended && !models[1].recommended && !models[0].fits);
+        //big machine, largest under a quarter
+        let models = flag_models(sized(&[3 * gb, 5 * gb, 8 * gb, 20 * gb]), 64 * gb);
+        assert_eq!(models.iter().filter(|m| m.recommended).count(), 1);
+        assert!(models[2].recommended && models[2].fits && models[3].fits);
+        //unknown memory rules nothing out
+        let models = flag_models(sized(&[3 * gb, 50 * gb]), 0);
+        assert!(models.iter().all(|m| m.fits) && models[0].recommended);
+        assert!(flag_models(Vec::new(), gb).is_empty());
+    }
+
+    #[test]
+    fn catalog_picks_one_quantization() {
+        let entry = |path: &str, size| HfEntry {
+            kind: "file".into(),
+            path: path.into(),
+            size,
+        };
+        let plain = [
+            entry("m-Q8_0.gguf", 9),
+            entry("m-Q4_0.gguf", 4),
+            entry("m-Q4_K_M.gguf", 5),
+            entry("mmproj-m-F16.gguf", 7),
+        ];
+        let model = pick_file("org/My-Model-GGUF", &plain).unwrap();
+        assert_eq!((model.file.as_str(), model.size), ("m-Q4_K_M.gguf", 5));
+        assert_eq!(model.name, "My Model");
+        let fallback = pick_file("org/x-GGUF", &[entry("x-Q4_0.gguf", 4)]).unwrap();
+        assert_eq!(fallback.file, "x-Q4_0.gguf");
+        assert!(pick_file("org/x-GGUF", &[entry("x-Q8_0.gguf", 8)]).is_none());
+        //projector size counts when needed
+        let omni = [
+            entry("LFM3-Omni-2B-Q4_K_M.gguf", 10),
+            entry("mmproj-LFM3-Omni-2B-Q4_K_M.gguf", 2),
+        ];
+        let model = pick_file("LiquidAI/LFM3-Omni-2B-GGUF", &omni).unwrap();
+        assert_eq!(model.size, 12);
+    }
+
     #[test]
     fn catalog_files_are_valid() {
-        for model in catalog() {
+        for model in static_catalog() {
             assert!(check_repo(&model.repo).is_ok(), "{}", model.repo);
             assert!(check_file(&model.file).is_ok(), "{}", model.file);
         }
@@ -1342,7 +1603,7 @@ mod tests {
 
     #[test]
     fn lfm3_models_come_with_their_projector() {
-        for model in catalog().iter().filter(|m| m.repo.contains("LFM3")) {
+        for model in static_catalog().iter().filter(|m| m.repo.contains("LFM3")) {
             assert_eq!(
                 companion(&model.repo, &model.file),
                 Some(format!("mmproj-{}", model.file))

@@ -16,7 +16,8 @@ pub fn announce(id: &str, name: &str, port: u16) -> Result<Announcement> {
     let daemon = ServiceDaemon::new().map_err(|e| anyhow!("mdns: {e}"))?;
     let host = format!("sampler-hub-{}.local.", &id[..id.len().min(12)]);
     let properties = HashMap::from([("id".to_string(), id.to_string())]);
-    let service = ServiceInfo::new(LAN_SERVICE, name, &host, "", port, properties)
+    let name = shorten(name);
+    let service = ServiceInfo::new(LAN_SERVICE, &name, &host, "", port, properties)
         .map_err(|e| anyhow!("mdns: {e}"))?
         .enable_addr_auto();
     let fullname = service.get_fullname().to_string();
@@ -31,5 +32,27 @@ impl Drop for Announcement {
             warn!("mdns unregister failed: {e}");
         }
         let _ = self.daemon.shutdown();
+    }
+}
+
+//dns labels stop at 63 bytes
+fn shorten(name: &str) -> String {
+    let mut end = name.len().min(63);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name[..end].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_names_cut_on_a_char_boundary() {
+        assert_eq!(shorten("studio"), "studio");
+        let long = "é".repeat(40);
+        let short = shorten(&long);
+        assert!(short.len() <= 63 && short.chars().all(|c| c == 'é'));
     }
 }

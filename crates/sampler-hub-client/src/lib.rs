@@ -153,6 +153,12 @@ pub struct CatalogModel {
     pub file: String,
     pub name: String,
     pub size: u64,
+    //at most half the hub memory
+    #[serde(default)]
+    pub fits: bool,
+    //the one the hub suggests
+    #[serde(default)]
+    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -870,6 +876,18 @@ impl HubClient {
             .await
     }
 
+    //admins only, returns the effective name
+    pub async fn rename_hub(&self, hub: PairedHub, name: String) -> Result<String, HubError> {
+        let mut stream = self.stream(&hub, ADMIN_ALPN).await?;
+        let response = stream.request(&AdminRequest::RenameHub { name }).await?;
+        stream.finish();
+        match response {
+            AdminResponse::HubRenamed { name } => Ok(name),
+            AdminResponse::Error { message } => Err(HubError::Internal(message)),
+            other => Err(HubError::Internal(format!("unexpected answer {other:?}"))),
+        }
+    }
+
     //admins only, the device loses access at once
     pub async fn remove_device(&self, hub: PairedHub, id: String) -> Result<(), HubError> {
         self.admin_devices(&hub, AdminRequest::RemoveDevice { id })
@@ -885,6 +903,8 @@ impl HubClient {
                     file: m.file,
                     name: m.name,
                     size: m.size,
+                    fits: m.fits,
+                    recommended: m.recommended,
                 })
                 .collect()),
             other => Err(HubError::Internal(format!("unexpected answer {other:?}"))),
