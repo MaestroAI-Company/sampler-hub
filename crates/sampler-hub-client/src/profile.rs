@@ -18,6 +18,11 @@ pub const PASSES: u32 = 3;
 //floor the hub cannot go under
 const MIN_MEMORY_KIB: u32 = 19 * 1024;
 const MIN_PASSES: u32 = 2;
+//a hub must not freeze clients
+const MAX_MEMORY_KIB: u32 = 256 * 1024;
+const MAX_PASSES: u32 = 10;
+const MIN_SALT_BYTES: usize = 16;
+const MAX_SALT_BYTES: usize = 64;
 const SEALED_PREFIX: &str = "o1:";
 
 pub type Key = [u8; 32];
@@ -48,7 +53,13 @@ pub fn derive(password: &str, salt: &str, memory_kib: u32, passes: u32) -> Resul
     if memory_kib < MIN_MEMORY_KIB || passes < MIN_PASSES {
         bail!("the hub asked for weak password settings");
     }
+    if memory_kib > MAX_MEMORY_KIB || passes > MAX_PASSES {
+        bail!("the hub asked for excessive password settings");
+    }
     let salt = B64.decode(salt)?;
+    if !(MIN_SALT_BYTES..=MAX_SALT_BYTES).contains(&salt.len()) {
+        bail!("the hub sent a bad salt");
+    }
     let params =
         Params::new(memory_kib, passes, 1, Some(64)).map_err(|e| anyhow!("argon2 params: {e}"))?;
     let mut seed = [0u8; 64];
@@ -343,6 +354,18 @@ mod tests {
         assert!(unlock(&wrong, &locked).is_err());
         //a hub cannot weaken the settings
         assert!(derive("correct horse", &locked.salt, 1024, 1).is_err());
+    }
+
+    #[test]
+    fn hub_cannot_exhaust_the_client() {
+        let salt = B64.encode([7u8; 16]);
+        assert!(derive("pw", &salt, MAX_MEMORY_KIB + 1, TEST_PASSES).is_err());
+        assert!(derive("pw", &salt, TEST_MEMORY, MAX_PASSES + 1).is_err());
+        //salt length must stay sane
+        assert!(derive("pw", &B64.encode([7u8; 8]), TEST_MEMORY, TEST_PASSES).is_err());
+        assert!(derive("pw", &B64.encode([7u8; 65]), TEST_MEMORY, TEST_PASSES).is_err());
+        assert!(derive("pw", &B64.encode([7u8; 64]), TEST_MEMORY, TEST_PASSES).is_ok());
+        assert!(derive("pw", &salt, MEMORY_KIB, PASSES).is_ok());
     }
 
     #[test]

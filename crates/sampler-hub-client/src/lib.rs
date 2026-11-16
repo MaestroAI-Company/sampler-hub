@@ -510,11 +510,14 @@ impl HubClient {
     ) -> Result<UnlockedProfile, HubError> {
         let derived = self.derive(&hub, &profile_id, password).await?;
         let request = ProfileRequest::Unlock {
-            profile: profile_id,
+            profile: profile_id.clone(),
             auth_key: derived.auth_key.clone(),
         };
         match self.profile_request(&hub, request).await? {
             ProfileResponse::Unlocked { profile, locked } => {
+                if profile.id != profile_id {
+                    return Err(HubError::Internal("the hub sent another profile".into()));
+                }
                 let key = profile::unlock(&derived, &locked).map_err(internal)?;
                 self.unlocked_with(profile, key, Some(locked))
             }
@@ -1079,6 +1082,7 @@ impl HubClient {
             .id
             .parse()
             .map_err(|_| HubError::Internal("invalid hub id".into()))?;
+        let requested_id = profile_id.clone();
         let request = LoginRequest::Login {
             profile: profile_id,
             auth_key: derived.auth_key.clone(),
@@ -1092,6 +1096,9 @@ impl HubClient {
                 profile,
                 locked,
             } => {
+                if profile.id != requested_id {
+                    return Err(HubError::Internal("the hub sent another profile".into()));
+                }
                 let key = profile::unlock(&derived, &locked).map_err(internal)?;
                 Ok(SignedIn {
                     hub: PairedHub {
