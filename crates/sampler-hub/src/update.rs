@@ -187,7 +187,14 @@ fn replace(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
 #[cfg(not(windows))]
 pub fn restart() -> Result<()> {
     use std::os::unix::process::CommandExt;
-    let error = std::process::Command::new(std::env::current_exe()?)
+    let exe = std::env::current_exe()?;
+    //linux marks the replaced file as deleted
+    let exe = exe
+        .to_str()
+        .and_then(|path| path.strip_suffix(" (deleted)"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or(exe);
+    let error = std::process::Command::new(exe)
         .args(std::env::args_os().skip(1))
         .exec();
     Err(error.into())
