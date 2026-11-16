@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 const MANIFEST: &str = "manifest.json";
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 //a bundle stays a reasonable size once unpacked
 const MAX_UNPACKED_BYTES: u64 = 1024 * 1024 * 1024;
 
@@ -81,10 +82,16 @@ impl Manifest {
     pub fn from_bundle(bytes: &[u8]) -> Result<Self> {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
         let mut raw = Vec::new();
+        //zip bombs must not fill memory
         archive
             .by_name(MANIFEST)
             .context("the bundle has no manifest.json")?
+            .take(MAX_MANIFEST_BYTES + 1)
             .read_to_end(&mut raw)?;
+        ensure!(
+            raw.len() as u64 <= MAX_MANIFEST_BYTES,
+            "manifest.json is too large"
+        );
         serde_json::from_slice(&raw).context("invalid manifest.json")
     }
 

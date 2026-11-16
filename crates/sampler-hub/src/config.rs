@@ -18,6 +18,8 @@ pub struct Config {
     pub port: Option<u16>,
     //shown to devices hostname by default
     pub name: Option<String>,
+    //member servers without an os sandbox
+    pub unsandboxed_member_mcp: bool,
 }
 
 impl Config {

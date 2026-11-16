@@ -126,6 +126,10 @@ pub struct Mcp {
     usage: crate::usage::Usage,
     //the hub wide mcp servers setting
     enabled: AtomicBool,
+    //member servers allowed without sandbox
+    unsandboxed_members: AtomicBool,
+    //lets supervisors vet each start
+    me: Weak<Mcp>,
 }
 
 impl std::fmt::Debug for Mcp {
@@ -147,7 +151,7 @@ impl Mcp {
         db: Arc<Db>,
         store: Arc<Store>,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
             dir: data_dir.join("mcp"),
             data_dir: data_dir.to_path_buf(),
             runtimes: Arc::new(Runtimes::new(data_dir, http.clone())),
@@ -158,7 +162,13 @@ impl Mcp {
             updates: Mutex::new(None),
             usage: Default::default(),
             enabled: AtomicBool::new(true),
+            unsandboxed_members: AtomicBool::new(false),
+            me: me.clone(),
         })
+    }
+
+    pub fn allow_unsandboxed_members(&self, on: bool) {
+        self.unsandboxed_members.store(on, Ordering::SeqCst);
     }
 
     //none for servers from before profiles
@@ -270,13 +280,19 @@ impl Mcp {
     //installs or reinstalls, then starts
     fn behind(self: &Arc<Self>, server: Arc<Server>) {
         let mcp = self.clone();
-        tokio::spawn(async move {
-            if let Err(e) = mcp.finish_install(&server).await {
-                warn!("mcp server {} not installed: {e:#}", server.title());
-                let _ = std::fs::remove_dir_all(server.dir.join("package"));
-                *server.state.lock().unwrap() = State::Failed(format!("{e:#}"));
+        //locked so the install cannot race
+        let mut slot = server.task.lock().unwrap();
+        let task = tokio::spawn({
+            let server = server.clone();
+            async move {
+                if let Err(e) = mcp.finish_install(&server).await {
+                    warn!("mcp server {} not installed: {e:#}", server.title());
+                    let _ = std::fs::remove_dir_all(server.dir.join("package"));
+                    *server.state.lock().unwrap() = State::Failed(format!("{e:#}"));
+                }
             }
         });
+        *slot = Some(task);
     }
 
     async fn finish_install(&self, server: &Arc<Server>) -> Result<()> {
@@ -302,6 +318,8 @@ impl Mcp {
         let enabled = spec.enabled;
         *server.spec.lock().unwrap() = spec;
         *server.update.lock().unwrap() = None;
+        //detached so start never aborts it
+        drop(server.task.lock().unwrap().take());
         if enabled {
             self.start(server);
         } else {
@@ -691,6 +709,7 @@ impl Mcp {
             self.runtimes.clone(),
             self.db.clone(),
             server.clone(),
+            self.me.clone(),
         ));
         *server.task.lock().unwrap() = Some(task);
     }
@@ -758,7 +777,7 @@ impl Mcp {
                 real.starts_with(&root),
                 "only your own folder can be shared"
             );
-            return Ok(path.to_path_buf());
+            return Ok(real);
         }
         let home = home_dir()?.canonicalize()?;
         ensure!(
@@ -769,7 +788,40 @@ impl Mcp {
             ensure!(!real.starts_with(&data), "the hub data cannot be shared");
             ensure!(!data.starts_with(&real), "this folder holds the hub data");
         }
-        Ok(path.to_path_buf())
+        Ok(real)
+    }
+
+    //a folder may have become a link
+    fn vet(
+        &self,
+        owner: Option<&str>,
+        listing: &McpListing,
+        values: &mut BTreeMap<String, String>,
+    ) -> Result<()> {
+        if owner.is_some_and(|o| !self.is_admin(o)) {
+            ensure!(
+                sandbox::isolation() == sandbox::Isolation::Full
+                    || self.unsandboxed_members.load(Ordering::SeqCst),
+                "this hub has no sandbox, member servers cannot run"
+            );
+        }
+        for field in listing
+            .fields
+            .iter()
+            .filter(|f| matches!(f.kind.as_str(), "folder" | "file"))
+        {
+            if let Some(value) = values.get_mut(&field.key) {
+                let real = self.check_folder(Path::new(value.as_str()), owner)?;
+                let real = real.to_str().context("the folder path is not valid text")?;
+                //servers expect a plain drive path
+                let plain = real
+                    .strip_prefix(r"\\?\")
+                    .filter(|p| p.as_bytes().get(1) == Some(&b':'))
+                    .unwrap_or(real);
+                *value = plain.to_string();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -777,6 +829,24 @@ fn home_dir() -> Result<PathBuf> {
     directories::BaseDirs::new()
         .map(|d| d.home_dir().to_path_buf())
         .context("no home folder")
+}
+
+fn ensure_not_link(path: &Path) -> Result<()> {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        #[cfg(windows)]
+        let reparse = {
+            use std::os::windows::fs::MetadataExt;
+            meta.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let reparse = false;
+        ensure!(
+            !meta.file_type().is_symlink() && !reparse,
+            "{} is a link",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 //one app container per server folder
@@ -836,11 +906,11 @@ async fn watch_updates(mcp: Weak<Mcp>) {
 }
 
 //restarts crashed servers until they crash too often
-async fn supervise(runtimes: Arc<Runtimes>, db: Arc<Db>, server: Arc<Server>) {
+async fn supervise(runtimes: Arc<Runtimes>, db: Arc<Db>, server: Arc<Server>, mcp: Weak<Mcp>) {
     let mut crashes: VecDeque<Instant> = VecDeque::new();
     loop {
         *server.state.lock().unwrap() = State::Starting;
-        let error = match run_once(&runtimes, &db, &server).await {
+        let error = match run_once(&runtimes, &db, &server, &mcp).await {
             Ok(Some(code)) => format!("exited with code {code}"),
             Ok(None) => "killed".to_string(),
             Err(e) => format!("{e:#}"),
@@ -859,14 +929,35 @@ async fn supervise(runtimes: Arc<Runtimes>, db: Arc<Db>, server: Arc<Server>) {
     }
 }
 
-async fn run_once(runtimes: &Runtimes, db: &Db, server: &Arc<Server>) -> Result<Option<i32>> {
+async fn run_once(
+    runtimes: &Runtimes,
+    db: &Db,
+    server: &Arc<Server>,
+    mcp: &Weak<Mcp>,
+) -> Result<Option<i32>> {
     let package = server.dir.join("package");
     let home = server.dir.join("home");
+    //a link would move the grant
+    ensure_not_link(&package)?;
+    ensure_not_link(&home)?;
     let spec = server.spec.lock().unwrap().clone();
     let mut values = spec.values.clone();
     values.extend(db.mcp_secrets(&server.id)?);
+    mcp.upgrade().context("the hub is stopping")?.vet(
+        spec.owner.as_deref(),
+        &spec.listing,
+        &mut values,
+    )?;
     let launch = install::launch(runtimes, &spec.listing, &values, &package, &home).await?;
     let mut env = scrubbed_env(&home, &launch.path)?;
+    for (key, value) in &launch.env {
+        let (key, value) = (key.as_encoded_bytes(), value.as_encoded_bytes());
+        //a nul would forge extra variables
+        ensure!(
+            !key.is_empty() && !key.contains(&b'=') && !key.contains(&0) && !value.contains(&0),
+            "the server sets an invalid environment variable"
+        );
+    }
     env.extend(launch.env);
     let args: Vec<OsString> = launch.args.into_iter().map(OsString::from).collect();
     //chosen folders, as paths and as roots

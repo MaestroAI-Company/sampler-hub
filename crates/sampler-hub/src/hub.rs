@@ -141,6 +141,7 @@ async fn start(data_dir: &Path, targets: Vec<Target>, llama_port: Option<u16>) -
     }
     let mcp = Mcp::new(data_dir, http.clone(), db.clone(), store.clone());
     //an admin may have turned either off
+    mcp.allow_unsandboxed_members(config.unsandboxed_member_mcp);
     mcp.set_enabled(settings.get().mcp_servers);
     mcp.start_installed();
     let features = tokio::spawn(follow_features(
