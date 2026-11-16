@@ -719,6 +719,10 @@ impl Llama {
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
+            //interrupted extractions never start
+            if name.ends_with(".partial") {
+                continue;
+            }
             let Some((tag, backend)) = name.split_once('-') else {
                 continue;
             };

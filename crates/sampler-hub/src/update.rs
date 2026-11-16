@@ -21,8 +21,13 @@ struct Release {
 
 fn parse(version: &str) -> Option<(u64, u64, u64)> {
     let mut parts = version.trim_start_matches('v').split('.');
-    let mut next = || parts.next()?.parse().ok();
-    Some((next()?, next()?, next()?))
+    //parse alone accepts a leading plus
+    let mut next = || {
+        let part = parts.next()?;
+        part.bytes().all(|b| b.is_ascii_digit()).then(|| part.parse().ok())?
+    };
+    let found = (next()?, next()?, next()?);
+    parts.next().is_none().then_some(found)
 }
 
 //follows the hub setting
@@ -89,7 +94,9 @@ pub fn asset() -> Option<&'static str> {
 
 //checked against the release checksums
 pub async fn download(http: &reqwest::Client, version: &str, asset: &str) -> Result<Vec<u8>> {
-    let base = format!("{RELEASES}/download/v{version}");
+    //the version ends up in the url
+    ensure!(parse(version).is_some(), "invalid version {version}");
+    let base = format!("{RELEASES}/download/v{}", version.trim_start_matches('v'));
     let sums = http
         .get(format!("{base}/SHA256SUMS"))
         .send()
@@ -196,5 +203,9 @@ mod tests {
         assert!(parse("v1.0.0") > parse("0.99.99"));
         assert_eq!(parse("0.5.0"), parse("v0.5.0"));
         assert_eq!(parse("nope"), None);
+        assert_eq!(parse("1.2.3.4"), None);
+        assert_eq!(parse("1.2"), None);
+        assert_eq!(parse("1.2/../3"), None);
+        assert_eq!(parse("1.+2.3"), None);
     }
 }

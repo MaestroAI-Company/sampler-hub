@@ -14,6 +14,31 @@ use crate::protocols::{Access, Peer, Protocol};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_REQUEST_BYTES: u64 = 32 * 1024 * 1024;
+const OLLAMA_ID: &str = "ollama";
+
+//paths must stay on the target
+fn safe_path(path: &str) -> bool {
+    let path = path.split('?').next().unwrap_or_default();
+    path.starts_with('/')
+        && !path.starts_with("//")
+        && !path.contains('\\')
+        && !path.split('/').any(|segment| {
+            matches!(
+                segment.to_ascii_lowercase().as_str(),
+                "." | ".." | "%2e" | "%2e%2e" | ".%2e" | "%2e."
+            )
+        })
+}
+
+//these change the model store
+fn is_ollama_management(path: &str) -> bool {
+    let path = path.split('?').next().unwrap_or_default();
+    let path = path.trim_end_matches('/');
+    matches!(
+        path,
+        "/api/pull" | "/api/push" | "/api/delete" | "/api/create" | "/api/copy"
+    ) || path.starts_with("/api/blobs")
+}
 //only headers providers need
 const FORWARDED_HEADERS: [&str; 3] = ["content-type", "accept", "authorization"];
 
@@ -173,8 +198,12 @@ impl Providers {
                 .clone()
         };
         //a leading slash keeps the host fixed
-        if !head.path.starts_with('/') {
-            bail!("invalid path");
+        ensure!(safe_path(&head.path), "invalid path");
+        if head.provider == OLLAMA_ID && is_ollama_management(&head.path) {
+            ensure!(
+                self.mcp.is_admin(peer.profile()?),
+                "only an admin manages ollama models"
+            );
         }
         if is_realtime(&head.path) {
             ensure!(
@@ -195,9 +224,14 @@ impl Providers {
         }
         let mut body = Vec::new();
         reader
-            .take(MAX_REQUEST_BYTES)
+            .take(MAX_REQUEST_BYTES + 1)
             .read_to_end(&mut body)
             .await?;
+        ensure!(
+            body.len() as u64 <= MAX_REQUEST_BYTES,
+            "request body exceeds {} MiB",
+            MAX_REQUEST_BYTES / 1024 / 1024
+        );
 
         let method = reqwest::Method::from_bytes(head.method.as_bytes())?;
         let mut request = self
@@ -273,4 +307,27 @@ where
         tracing::debug!("realtime session ended: {e:#}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_stay_on_the_target() {
+        assert!(safe_path("/api/chat?x=../y"));
+        assert!(!safe_path("api/chat"));
+        assert!(!safe_path("//evil"));
+        assert!(!safe_path("/a\\b"));
+        assert!(!safe_path("/a/../b"));
+        assert!(!safe_path("/a/%2E%2e/b"));
+        assert!(!safe_path("/a/./b"));
+    }
+
+    #[test]
+    fn ollama_management_is_detected() {
+        assert!(is_ollama_management("/api/pull"));
+        assert!(is_ollama_management("/api/blobs/sha256:x"));
+        assert!(!is_ollama_management("/api/chat"));
+    }
 }
