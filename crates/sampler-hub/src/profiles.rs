@@ -238,10 +238,9 @@ impl Profiles {
     }
 
     fn check_password(&self, profile: &str, auth_key: &str) -> Result<ProfileKey> {
-        self.tries.check(profile)?;
+        self.tries.attempt(profile)?;
         let key = self.key(profile)?;
         if !same(&auth_hash(auth_key), &key.auth_hash) {
-            self.tries.failed(profile);
             warn!("wrong password for profile {}", short(profile));
             bail!("wrong password");
         }
@@ -360,8 +359,20 @@ pub struct Tries {
 }
 
 impl Tries {
+    //counted under one lock before comparing
+    fn attempt(&self, profile: &str) -> Result<()> {
+        let mut tries = self.by_profile.lock().unwrap();
+        Self::check_in(&tries, profile)?;
+        Self::failed_in(&mut tries, profile);
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn check(&self, profile: &str) -> Result<()> {
-        let tries = self.by_profile.lock().unwrap();
+        Self::check_in(&self.by_profile.lock().unwrap(), profile)
+    }
+
+    fn check_in(tries: &HashMap<String, (u32, Option<Instant>)>, profile: &str) -> Result<()> {
         if let Some((_, Some(until))) = tries.get(profile) {
             let left = until.saturating_duration_since(Instant::now());
             if !left.is_zero() {
@@ -374,8 +385,12 @@ impl Tries {
         Ok(())
     }
 
+    #[cfg(test)]
     fn failed(&self, profile: &str) {
-        let mut tries = self.by_profile.lock().unwrap();
+        Self::failed_in(&mut self.by_profile.lock().unwrap(), profile);
+    }
+
+    fn failed_in(tries: &mut HashMap<String, (u32, Option<Instant>)>, profile: &str) {
         let entry = tries.entry(profile.to_string()).or_default();
         entry.0 += 1;
         if entry.0 >= FREE_TRIES {

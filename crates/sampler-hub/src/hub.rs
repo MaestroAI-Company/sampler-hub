@@ -23,7 +23,7 @@ use crate::llama::{Llama, Models};
 use crate::mcp::{Mcp, McpAdmin};
 use crate::name::HubName;
 use crate::profiles::{Links, Login, Profiles};
-use crate::protocols::{Admin, Pair, Ping, Protocol, Session, admit, still_allowed};
+use crate::protocols::{Access, Admin, Pair, Ping, Protocol, Session, admit, still_allowed};
 use crate::providers::{Providers, Target, default_targets};
 use crate::secrets::{Secrets, http_client};
 use crate::settings::Settings;
@@ -456,6 +456,22 @@ impl<P: Protocol + std::fmt::Debug> ProtocolHandler for OverIroh<P> {
         {
             conn.close(UNAUTHORIZED.into(), b"unauthorized");
             return Ok(());
+        }
+        if !matches!(P::ACCESS, Access::Public) {
+            //open streams outlive a revoked device otherwise
+            let (conn, store, id) = (conn.clone(), self.store.clone(), id.clone());
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = conn.closed() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    }
+                    if !matches!(still_allowed(&store, &id, P::ACCESS), Ok(Some(_))) {
+                        conn.close(UNAUTHORIZED.into(), b"removed");
+                        return;
+                    }
+                }
+            });
         }
         //ends when the client closes the connection
         while let Ok((mut send, recv)) = conn.accept_bi().await {

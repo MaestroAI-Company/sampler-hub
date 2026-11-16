@@ -878,8 +878,12 @@ where
     if len > MAX_FRAME_BYTES {
         bail!("message too large");
     }
-    let mut bytes = vec![0u8; len as usize];
-    reader.read_exact(&mut bytes).await?;
+    //grows with the data actually received
+    let mut bytes = Vec::new();
+    (&mut *reader).take(len as u64).read_to_end(&mut bytes).await?;
+    if bytes.len() != len as usize {
+        bail!("stream ended inside a message");
+    }
     Ok(Some(serde_json::from_slice(&bytes)?))
 }
 
