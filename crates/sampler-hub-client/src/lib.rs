@@ -19,12 +19,15 @@ use sampler_hub_proto::HubSettings as ProtoSettings;
 use sampler_hub_proto::invite::{self, INVITE_ALPN, InviteRequest, InviteResponse};
 use sampler_hub_proto::{
     ADMIN_ALPN, AdminRequest, AdminResponse, ForwardHead, HUB_ALPN, HubRequest, HubResponse,
-    LOGIN_ALPN, LoginRequest, LoginResponse, MODELS_ALPN, ModelsRequest, ModelsResponse, PAIR_ALPN, PROFILES_ALPN, PROVIDERS_ALPN,
+    MODELS_ALPN, ModelsRequest, ModelsResponse, PAIR_ALPN, PROFILES_ALPN, PROVIDERS_ALPN,
     PairRejection, PairRequest, PairResponse, PairingLink, ProfileInfo, ProfileRequest,
     ProfileResponse, ProfileRole, ProvidersRequest, ProvidersResponse, Record, SECRET_COLLECTIONS,
     SECRETS_ALPN, SYNC_ALPN, SecretsRequest, SecretsResponse, SyncRequest, SyncResponse,
     UNAUTHORIZED, auth_hash, hub_addr, machine_tag, read_frame, request, write_frame,
 };
+//login is native only
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+use sampler_hub_proto::{LOGIN_ALPN, LoginRequest, LoginResponse};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::sync::{Mutex, OnceCell};
